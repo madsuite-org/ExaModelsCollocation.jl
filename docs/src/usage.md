@@ -62,7 +62,7 @@ init  = (u = ..., p = ..., θ = ...)  # initial guesses / parameter values
 core, dae = EMD.add_dae(core, f, z0, tspan, init;
   g          = g,                           # Algebraic equality constraints g(x) = 0
   c          = c,                           # Path constraints c(x) ≤ 0
-  hE         = hE,                          # Terminal constraints hE(z_f) = 0
+  hE         = hE,                          # Terminal constraints hE(zf) = 0
   u          = u,                           # Fixed control profile u(t) (decision variable if omitted)
   bounds     = (z = (zL, zU), y = ..., u = ..., p = ...), # Variable bounds / simple path constraints
   nodes      = tstops,                      # Interval node placements (auto-chosen if not supplied)
@@ -75,7 +75,7 @@ core, dae = EMD.add_dae(core, f, z0, tspan, init;
 
 `add_dae` appends the collocation, continuity, initial-condition, algebraic, path, and
 terminal constraints to `core` and returns `dae`, which holds the variable handles
-(`dae.z`, `dae.z_f`, `dae.p`, `dae.θ`, …) and the mesh/collocation layout. `tspan` and
+(`dae.z`, `dae.zf`, `dae.p`, `dae.θ`, …) and the mesh/collocation layout. `tspan` and
 `init` are required positional arguments; everything else is keyword. **The objective is
 built separately** against `dae` (see [Examples](examples.md)).
 

@@ -19,7 +19,7 @@ NLP (Eq. 10.19), generalized so the collocation constraint can be written in eit
 3. **General basis.** Support Eq. 10.19 (Lagrange interpolation + Lagrange basis) *and*
    the equivalent Runge–Kutta form, selectable via `basis`, sharing the same roots.
 4. **Complete problem data.** Accept initial conditions, variable bounds, and the
-   terminal equality `hₑ(z_f) = 0` (Eq. 10.19h).
+   terminal equality `hₑ(zf) = 0` (Eq. 10.19h).
 5. **Parametric hooks.** Every user function gains a `θ` argument that becomes ExaModels
    `@add_par` parameters — fixed at solve time, mutable afterward via `set_parameter!`
    for parametric / sensitivity studies without rebuilding.
@@ -37,7 +37,7 @@ dz/dt = f(z, y, u, p, θ, t)                       (differential)
     0 = g(z, y, u, p, θ, t)                        (algebraic)
     0 ≥ c(z, y, u, p, θ, t)                        (path / inequality)
  z(t₀) = z₀(y, u, p, θ)                            (initial condition)
-    0 = hₑ(z_f, p, θ)                              (terminal condition, 10.19h)
+    0 = hₑ(zf, p, θ)                              (terminal condition, 10.19h)
 ```
 Variable classes: `z` differential state, `y` algebraic state, `u` control, `p`
 time-invariant **decision** parameters (NLP unknowns via `add_var`), `θ` fixed ExaModels
@@ -66,8 +66,8 @@ for dimension inference (an in-place `dz` would need `nz` up front to allocate �
 Two families of variables:
 - **Collocation states** `z_{i,j}, y_{i,j}, u_{i,j}` for `i = 1..N`, `j = 1..K`.
 - **Boundary (element-junction) states** `zb_i` for `i = 0..N`, where `zb₀ = z(t₀)` and
-  `zb_N = z_f`. These carry continuity between elements and give the objective a clean
-  handle for `z_f = zb_N`.
+  `zb_N = zf`. These carry continuity between elements and give the objective a clean
+  handle for `zf = zb_N`.
 
 ### Collocation constraint — two interchangeable bases
 
@@ -119,7 +119,7 @@ core, dae = EMD.add_dae(
     # ---- problem structure ----
     g   = nothing,      # algebraic g(z,y,u,p,θ,t) = 0  → length-ny vector
     c   = nothing,      # path      c(z,y,u,p,θ,t) ≤ 0  → length-nc vector
-    hE  = nothing,      # terminal  hE(z_f,p,θ) = 0      → length-nhE vector (10.19h; NO t — it is the t_f point)
+    hE  = nothing,      # terminal  hE(zf,p,θ) = 0      → length-nhE vector (10.19h; NO t — it is the t_f point)
 
     # ---- controls ----
     u = nothing,        # fixed control profile u(t)::t->Vector. If GIVEN, u is a FIXED input (and drives
@@ -150,7 +150,7 @@ Settled conventions:
 - **`p` vs `θ`.** `p` = NLP unknowns (`add_var`, bounded/optimized). `θ` = ExaModels
   parameters (`add_par`, fixed per solve, mutable via `set_parameter!`).
 - **Function arity.** `f(z,y,u,p,θ,t)`; `g/c(z,y,u,p,θ,t)` (`t` last, after `θ`).
-  `z0(y,u,p,θ)` and `hE(z_f,p,θ)` **take no `t`** — by definition they are the `t₀` and
+  `z0(y,u,p,θ)` and `hE(zf,p,θ)` **take no `t`** — by definition they are the `t₀` and
   `t_f` points respectively.
 - **`u`.** Providing the `u` profile makes `u` a fixed input; omitting it makes `u` a
   decision variable whose initial guess comes from `init.u`.
@@ -231,7 +231,7 @@ trajectories from a solution.
 struct CollocationData
     # variable handles (ExaModels Variable / Parameter objects)
     z          # differential collocation states z_{i,j}
-    zb         # boundary states zb_i (i=0..N);  zb[end] == z_f
+    zb         # boundary states zb_i (i=0..N);  zb[end] == zf
     y          # algebraic states y_{i,j}
     u          # controls u_{i,j}
     p          # decision parameters (Variable)
@@ -251,7 +251,7 @@ struct CollocationData
     ω1         # interpolation weights ℓ_k(1)
 
     # convenience
-    z_f        # handle for terminal state zb_N
+    zf        # handle for terminal state zb_N
     method     # (basis, polynomial, roots) used
     con        # NamedTuple of constraint handles (collocation, continuity, initial, algebraic, path, terminal)
 end
@@ -263,8 +263,8 @@ end
 core, dae = EMD.add_dae(core, f, z0; hE=hE, degree=3, roots=EMD.GaussRadau(),
                          u=u_nominal, init=(p=p0, θ=θ0))
 
-# Mayer term φ(z_f):
-@add_obj(core, (dae.z_f[k] - z_ref[k])^2 for k in 1:dae.nz)
+# Mayer term φ(zf):
+@add_obj(core, (dae.zf[k] - z_ref[k])^2 for k in 1:dae.nz)
 
 # Lagrange (integral) term via quadrature weights in dae:
 @add_obj(core, dae.h[i] * w[j] * L(dae.z[k,i,j], dae.u[l,i,j]) for ...)
@@ -291,12 +291,12 @@ core, dae = EMD.add_dae(core, f, z0; hE=hE, degree=3, roots=EMD.GaussRadau(),
 - [ ] `bounds`/`init` NamedTuples map to `lvar/uvar`/`start` on `z, y, u, p`; `θ` value
       from `init.θ`. `u` given ⇒ fixed input; omitted ⇒ decision variable.
 - [ ] General initial-condition constraint `z0(y,u,p,θ)` (C3).
-- [ ] Terminal constraint `hE(z_f, p, θ)` (C6, Eq. 10.19h).
+- [ ] Terminal constraint `hE(zf, p, θ)` (C6, Eq. 10.19h).
 - [ ] `basis` dispatch producing C1 in Lagrange *or* Runge–Kutta form from shared roots.
 - [ ] Forward-solve init (dims + `:simulate` warm-start + adaptive mesh) behind an
       OrdinaryDiffEq extension; **never loaded when `nodes` is provided**.
 - [ ] Integrator-free `:constant`/`:zero` warm-start paths (consistent-IC + hold).
-- [ ] `dae` exposes all variable handles, mesh/collocation layout, and `z_f`.
+- [ ] `dae` exposes all variable handles, mesh/collocation layout, and `zf`.
 - [ ] Solution recovery helper: `dae` → trajectories `z(t), y(t), u(t)`.
 
 ## 8. Open decisions
