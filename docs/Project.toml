@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+ExaModelsDynamic = "806a8761-d632-41d1-aec4-b1285f27c7c5"
+
+[compat]
+Documenter = "1"

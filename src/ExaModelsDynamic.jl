@@ -1,5 +1,5 @@
 """
-    ExaModelsDyanmic
+    ExaModelsDynamic
 
 Automatically transcribes differential equations as algebraic constraints in ExaModels.jl
 """
@@ -11,11 +11,24 @@ import ExaModels:
 
 include("structs.jl")
 include("utils.jl")
-include("initialize.jl")
-include("nodes.jl")
-include("basis.jl")
-include("polynomial.jl")
-include("roots.jl")
+
+for file in [
+        "roots",
+        "polynomial",
+        "basis",
+        "nodes",
+        "mesh",
+        "variables",
+        "collocation",
+        "algebraic",
+        "continuity",
+        "initialcons",
+        "terminalcons",
+        "pathcons",
+        "initialization",
+    ]
+    include("dynamic/$file.jl")
+end
 
 include("exports.jl")
 export add_dae
