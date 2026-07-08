@@ -1,0 +1,1 @@
+# Collocation mesh (node placements)

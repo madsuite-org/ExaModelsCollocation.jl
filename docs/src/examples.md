@@ -29,21 +29,21 @@ using ExaModels
 using ExaModelsDynamic as EMD
 
 # dz/dt — returns [ż₁, ż₂, ż₃]; ż₃ accumulates the running cost
-function f(z, y, u, p, θ, t)
+function f(z, y, u, p, theta, t)
     return [
         z[2],
-        θ[1]*(1 - z[1]^2)*z[2] - z[1] + u[1] + p[2]*cos(t),  # θ₁ = μ, p₂ = drive amplitude, explicit t
+        theta[1]*(1 - z[1]^2)*z[2] - z[1] + u[1] + p[2]*cos(t),  # theta₁ = μ, p₂ = drive amplitude, explicit t
         z[1]^2 + z[2]^2 + u[1]^2,                            # running cost
     ]
 end
 
 # Initial condition — the initial velocity z₂(0) is the free decision variable p₁
-z0(y, u, p, θ) = [0.0, p[1], 0.0]
+z0(y, u, p, theta) = [0.0, p[1], 0.0]
 
 core = ExaModels.ExaCore()
 
 tspan = (0.0, 5.0)
-init  = (u = [0.0], p = [1.0, 0.0], θ = [1.0])            # guesses: u, [init velocity, drive amp]; value: μ = 1
+init  = (u = [0.0], p = [1.0, 0.0], theta = [1.0])            # guesses: u, [init velocity, drive amp]; value: μ = 1
 
 core, dae = EMD.add_dae(core, f, z0, tspan, init;
     nodes  = range(0, 5; length = 20),                    # uniform mesh (no forward solve → no OrdinaryDiffEq)
@@ -59,19 +59,19 @@ model = ExaModels.ExaModel(core)
 
 ### Free and parametric initial conditions
 
-Because `z0` receives `p` and `θ`, an initial condition can be a decision variable or a
+Because `z0` receives `p` and `theta`, an initial condition can be a decision variable or a
 parameter. Above, `z₂(0) = p₁` makes the initial velocity a **free** decision variable
 (free-initial-condition optimal control). To make a component a swept **parameter** instead,
-reference `θ`, e.g. `z0(y,u,p,θ) = [θ[2], p[1], 0.0]`.
+reference `theta`, e.g. `z0(y,u,p,theta) = [theta[2], p[1], 0.0]`.
 
 ### Parameter sweeps
 
-Because the damping ``\mu`` is an ExaModels parameter (`θ`), you can sweep it and re-solve
+Because the damping ``\mu`` is an ExaModels parameter (`theta`), you can sweep it and re-solve
 **without rebuilding** the model — the constraint structure is unchanged:
 
 ```julia
 for μ in (0.5, 1.0, 2.0)
-    set_parameter!(core, dae.θ, [μ])
+    set_parameter!(core, dae.theta, [μ])
     # re-solve ...
 end
 ```

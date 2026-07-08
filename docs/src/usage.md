@@ -21,11 +21,11 @@ t \in [t_0,t_f]
 as Julia functions, each **returning a vector**:
 
 ```julia
-f(z,y,u,p,θ,t)  = ...   # dz/dt
-z0(y,u,p,θ)     = ...   # initial condition at t = t₀
-g(z,y,u,p,θ,t)  = ...   # algebraic equality (= 0)
-c(z,y,u,p,θ,t)  = ...   # path inequality    (≤ 0)
-hE(zf,p,θ)      = ...   # terminal equality  (= 0)
+f(z,y,u,p,theta,t)  = ...   # dz/dt
+z0(y,u,p,theta)     = ...   # initial condition at t = t₀
+g(z,y,u,p,theta,t)  = ...   # algebraic equality (= 0)
+c(z,y,u,p,theta,t)  = ...   # path inequality    (≤ 0)
+hE(zf,p,theta)      = ...   # terminal equality  (= 0)
 ```
 
 where
@@ -57,7 +57,7 @@ using ExaModelsDynamic as EMD
 core = ExaModels.ExaCore(; backend = CUDA.Backend(), concrete = Val(true))
 
 tspan = (t0, tf)                     # time horizon; a single number T ⇒ (zero(T), T)
-init  = (u = ..., p = ..., θ = ...)  # initial guesses / parameter values
+init  = (u = ..., p = ..., theta = ...)  # initial guesses / parameter values
 
 core, dae = EMD.add_dae(core, f, z0, tspan, init;
   g          = g,                           # Algebraic equality constraints g(x) = 0
@@ -75,7 +75,7 @@ core, dae = EMD.add_dae(core, f, z0, tspan, init;
 
 `add_dae` appends the collocation, continuity, initial-condition, algebraic, path, and
 terminal constraints to `core` and returns `dae`, which holds the variable handles
-(`dae.z`, `dae.zf`, `dae.p`, `dae.θ`, …) and the mesh/collocation layout. `tspan` and
+(`dae.z`, `dae.zf`, `dae.p`, `dae.theta`, …) and the mesh/collocation layout. `tspan` and
 `init` are required positional arguments; everything else is keyword. **The objective is
 built separately** against `dae` (see [Examples](examples.md)).
 
@@ -83,14 +83,14 @@ built separately** against `dae` (see [Examples](examples.md)).
 
 `init` supplies the initial guesses **and** declares which variable classes are present:
 
-* `init.p`, `init.θ` — length-`np`/`nθ` vectors (time-invariant). `init.θ` is the
+* `init.p`, `init.theta` — length-`np`/`ntheta` vectors (time-invariant). `init.theta` is the
   parameter *value* (not merely a guess).
 * `init.u`, `init.z`, `init.y` — either a scalar / length-`n` vector (broadcast to every
   collocation point) or a callable `t -> vector` (a time-varying guess, sampled at the
   collocation points).
 
 An entry that is `[]` or omitted means **that class is absent**: `init.p = []` ⇒ no free
-parameters, `init.θ = []` ⇒ no parameters. Likewise `u = []` or omitted means **no fixed
+parameters, `init.theta = []` ⇒ no parameters. Likewise `u = []` or omitted means **no fixed
 control profile** — the control becomes a decision variable (guessed by `init.u`), or is
 absent if `init.u` is empty too. A fixed control profile is passed via the `u` keyword as a
 callable `t -> vector` (the same shape as an `init.u` guess).

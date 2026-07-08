@@ -21,11 +21,11 @@ $$
 
 as Julia functions, each **returning a vector**:
 ```julia
-f(z,y,u,p,θ,t)  = ...   # right-hand side function (= dz/dt)
-z0(y,u,p,θ)     = ...   # initial condition        (t = t₀)
-g(z,y,u,p,θ,t)  = ...   # algebraic equality       (= 0)
-c(z,y,u,p,θ,t)  = ...   # bounds/path inequality   (≤ 0)
-hE(zf,p,θ)      = ...   # terminal equality        (= 0)
+f(z,y,u,p,theta,t)  = ...   # right-hand side function (= dz/dt)
+z0(y,u,p,theta)     = ...   # initial condition        (t = t₀)
+g(z,y,u,p,theta,t)  = ...   # algebraic equality       (= 0)
+c(z,y,u,p,theta,t)  = ...   # bounds/path inequality   (≤ 0)
+hE(zf,p,theta)      = ...   # terminal equality        (= 0)
 ```
 where
 * $z(t)$ is a differential state variable
@@ -50,7 +50,7 @@ tspan = (t0, tf)
 init  = (
     u = ...,
     p = ...,
-    θ = ...
+    theta = ...
 ) 
 
 # Transcribes [dz/dt, z₀, g, c, hE] into algebraic constraints on 'core'
@@ -71,11 +71,11 @@ core, dae = EMD.add_dae(core, f, z0, tspan, init;
   roots      = EMD.GaussRadau(), # Collocation points {GaussRadau(),0 GaussLegendre(), GaussLobatto()}
 )
 ```
-`add_dae` appends the collocation, continuity, initial-condition, algebraic, path, and terminal constraints to `core` and returns `dae`, which holds the variable handles (`dae.z`, `dae.zf`, `dae.p`, `dae.θ`, ...) and the collocation mesh.
+`add_dae` appends the collocation, continuity, initial-condition, algebraic, path, and terminal constraints to `core` and returns `dae`, which holds the variable handles (`dae.z`, `dae.zf`, `dae.p`, `dae.theta`, ...) and the collocation mesh.
 
 
 ## Example
-[Van der Pol oscillator](https://mintoc.de/index.php/Van_der_Pol_Oscillator): drive the oscillator to rest with minimum control effort. The running cost $\int_0^{t_f}(z_1^2 + z_2^2 + u^2)\,\mathrm{d}t$ is transcribed as an augmented state $z_3$ with $\dot z_3 = z_1^2 + z_2^2 + u^2$, so the objective is simply its terminal value $z_3(t_f)$. The damping $\mu = \theta_1$ is a mutable parameter and the initial velocity $z_2(0) = p_1$ and the feed-forward drive amplitude $p_2$ are decision variables.
+[Van der Pol oscillator](https://mintoc.de/index.php/Van_der_Pol_Oscillator): drive the oscillator to rest with minimum control effort. The running cost $\int_0^{t_f}(z_1^2 + z_2^2 + u^2)\,\mathrm{d}t$ is transcribed as an augmented state $z_3$ with $\dot z_3 = z_1^2 + z_2^2 + u^2$, so the objective is simply its terminal value $z_3(t_f)$. The damping $\mu = \theta_1$ is a mutable parameter and the initial velocity $z_2(t_0) = p_1$ and the feed-forward drive amplitude $p_2$ are decision variables.
 
 $$
 \min_{u,~p}\; z_3(t_f)
@@ -86,7 +86,7 @@ $$
 \dot z_3 &= z_1^2 + z_2^2 + u^2
 \end{aligned}
 \qquad
-z(0) = (0,~p_1,~0)
+z(t_0) = (0,~p_1,~0)
 $$
 
 ```julia
@@ -94,25 +94,25 @@ using ExaModels
 using ExaModelsDynamic as EMD
 
 # Right-hand side function, returns [ż₁, ż₂, ż₃] evaluations
-function f(z, y, u, p, θ, t)
+function f(z, y, u, p, theta, t)
     return [
         z[2],
-        θ[1]*z[2]*(1 - z[1]^2) - z[1] + u[1] + p[2]*cos(t),  # θ₁ = μ, p₂ = drive amplitude, explicit t
+        theta[1]*z[2]*(1 - z[1]^2) - z[1] + u[1] + p[2]*cos(t),  # theta₁ = μ, p₂ = drive amplitude, explicit t
         z[1]^2 + z[2]^2 + u[1]^2,                            # running cost
     ]
 end
 
 # Initial condition function
-z0(y, u, p, θ) = [0.0, p[1], 0.0]
+z0(y, u, p, theta) = [0.0, p[1], 0.0]
 
 core = ExaModels.ExaCore(; concrete = Val(true))
 
 tspan = (0.0, 5.0)
-init  = (u = [0.0], p = [1.0, 0.0], θ = [1.0])      # initial guesses for u, p=[init velocity, drive amp]
-                                                    # mutable parameter θ value: μ = 1
+init  = (u = [0.0], p = [1.0, 0.0], theta = [1.0])      # initial guesses for u, p=[init velocity, drive amp]
+                                                    # mutable parameter theta value: μ = 1
 
 core, dae = EMD.add_dae(core, f, z0, tspan, init;
-    nodes  = range(0, 5; length = 20),              # uniformly spaced mesh
+    nodes  = range(0, 5; length = 20),              # uniformly spaced mesh for t ∈ [0, 5]
     degree = 3,                                     # degree 3 interpolating polynomials
     bounds = (p = ([-2.0, -1.0], [2.0, 1.0]),),     # p₁ ∈ [-2, 2],  p₂ ∈ [-1, 1]
 )
@@ -125,10 +125,10 @@ using MadNLP
 result = madnlp(model)
 ```
 
-Because the damping $\mu$ is a mutable ExaModels parameter (`θ`), the model can be re-solved without rebuilding:
+Because `theta` is a mutable ExaModels parameter, the model can be re-solved without rebuilding:
 ```julia
 for μ in (0.5, 1.0, 2.0)
-    set_parameter!(core, dae.θ, [μ])
+    set_parameter!(core, dae.theta, [μ])
     madnlp(model)
 end
 ```

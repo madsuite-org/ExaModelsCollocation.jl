@@ -17,7 +17,6 @@ for file in [
         "polynomial",
         "basis",
         "nodes",
-        "mesh",
         "variables",
         "collocation",
         "algebraic",

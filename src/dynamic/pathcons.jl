@@ -1,0 +1,1 @@
+# Path constraints, c(z,y,u,p,theta,t) ≤ 0

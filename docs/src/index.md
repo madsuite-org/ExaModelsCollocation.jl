@@ -9,7 +9,7 @@ constraints in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl), so dyna
 optimization problems can be solved with the simultaneous (collocation-on-finite-elements)
 method on CPU or GPU backends.
 
-You supply the dynamics `dz/dt = f(z,y,u,p,θ,t)`, the initial condition `z₀`, and optional
+You supply the dynamics `dz/dt = f(z,y,u,p,theta,t)`, the initial condition `z₀`, and optional
 algebraic / path / terminal constraints as plain Julia functions. A single call to
 [`add_dae`](@ref) discretizes them and appends every structural constraint to an
 `ExaModels.ExaCore`, returning the variable handles and mesh layout as a `dae` object. The

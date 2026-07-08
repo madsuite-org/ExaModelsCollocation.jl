@@ -20,10 +20,10 @@ NLP (Eq. 10.19), generalized so the collocation constraint can be written in eit
    the equivalent Runge–Kutta form, selectable via `basis`, sharing the same roots.
 4. **Complete problem data.** Accept initial conditions, variable bounds, and the
    terminal equality `hₑ(zf) = 0` (Eq. 10.19h).
-5. **Parametric hooks.** Every user function gains a `θ` argument that becomes ExaModels
+5. **Parametric hooks.** Every user function gains a `theta` argument that becomes ExaModels
    `@add_par` parameters — fixed at solve time, mutable afterward via `set_parameter!`
    for parametric / sensitivity studies without rebuilding.
-6. **Simulate-to-initialize.** When possible, a single forward DAE solve at `(p0, θ0,
+6. **Simulate-to-initialize.** When possible, a single forward DAE solve at `(p0, theta0,
    u(t))` supplies (a) all problem dimensions, (b) warm-start guesses for the discretized
    states, and (c) an adaptive mesh. The forward solver is an **optional dependency**,
    loaded only when it is actually needed to generate a mesh.
@@ -33,16 +33,16 @@ NLP (Eq. 10.19), generalized so the collocation constraint can be written in eit
 Continuous DAE optimal-control problem on `t ∈ [t₀, t_f]`:
 
 ```
-dz/dt = f(z, y, u, p, θ, t)                       (differential)
-    0 = g(z, y, u, p, θ, t)                        (algebraic)
-    0 ≥ c(z, y, u, p, θ, t)                        (path / inequality)
- z(t₀) = z₀(y, u, p, θ)                            (initial condition)
-    0 = hₑ(zf, p, θ)                              (terminal condition, 10.19h)
+dz/dt = f(z, y, u, p, theta, t)                       (differential)
+    0 = g(z, y, u, p, theta, t)                        (algebraic)
+    0 ≥ c(z, y, u, p, theta, t)                        (path / inequality)
+ z(t₀) = z₀(y, u, p, theta)                            (initial condition)
+    0 = hₑ(zf, p, theta)                              (terminal condition, 10.19h)
 ```
 Variable classes: `z` differential state, `y` algebraic state, `u` control, `p`
-time-invariant **decision** parameters (NLP unknowns via `add_var`), `θ` fixed ExaModels
+time-invariant **decision** parameters (NLP unknowns via `add_var`), `theta` fixed ExaModels
 parameters (via `add_par`, mutable with `set_parameter!`), `t` time. `t` is placed last in
-every user signature (after `θ`) so it stays the trailing argument. Every function
+every user signature (after `theta`) so it stays the trailing argument. Every function
 **returns a full vector** (length `nz` for `f`/`z₀`, `ny` for `g`, etc.) and must be
 written **type-generically** (`::Real`-like, no `::Float64`, no `length(z)`/mutation) so
 the same function works for symbolic tracing *and* numeric simulation.
@@ -59,9 +59,9 @@ for dimension inference (an in-place `dz` would need `nz` up front to allocate �
 
 - Horizon split into `N` finite elements with boundaries (nodes)
   `t₀ = τ̂₀ < τ̂₁ < … < τ̂_N = t_f`; element `i` has length `hᵢ = τ̂ᵢ − τ̂ᵢ₋₁`.
-- Each element carries `K` interior collocation points at the roots `ρ₁,…,ρ_K ∈ (0,1]`
+- Each element carries `K` interior collocation points at the roots `τ₁,…,τ_K ∈ (0,1]`
   of the chosen family (`GaussRadau` / `GaussLegendre` / `GaussLobatto`); `K` = `degree`.
-- Collocation time in element `i`: `t_{i,j} = τ̂ᵢ₋₁ + hᵢ ρ_j`.
+- Collocation time in element `i`: `t_{i,j} = τ̂ᵢ₋₁ + hᵢ τ_j`.
 
 Two families of variables:
 - **Collocation states** `z_{i,j}, y_{i,j}, u_{i,j}` for `i = 1..N`, `j = 1..K`.
@@ -71,17 +71,17 @@ Two families of variables:
 
 ### Collocation constraint — two interchangeable bases
 
-Let `ℓ_k(·)` be the Lagrange basis over `{0, ρ₁,…,ρ_K}` and `ℓ̇` its derivative.
+Let `ℓ_k(·)` be the Lagrange basis over `{0, τ₁,…,τ_K}` and `ℓ̇` its derivative.
 
 - **`Lagrange()` (differentiation form, Eq. 10.19b):**
   ```
-  Σ_{k=0}^{K} zc_{i,k} · ℓ̇_k(ρ_j)  =  hᵢ · f(z_{i,j}, y_{i,j}, u_{i,j}, p, θ, t_{i,j})
+  Σ_{k=0}^{K} zc_{i,k} · ℓ̇_k(τ_j)  =  hᵢ · f(z_{i,j}, y_{i,j}, u_{i,j}, p, theta, t_{i,j})
   ```
   where `zc_{i,0} = zb_{i-1}` and `zc_{i,k>0} = z_{i,k}`.
 - **`RungeKutta()` (integration form):** with Butcher coefficients `a_{jk}`, `b_j` from the
   same roots:
   ```
-  z_{i,j} = zb_{i-1} + hᵢ · Σ_{k=1}^{K} a_{jk} · f(z_{i,k}, …, θ, t_{i,k})
+  z_{i,j} = zb_{i-1} + hᵢ · Σ_{k=1}^{K} a_{jk} · f(z_{i,k}, …, theta, t_{i,k})
   ```
 
 ### Structural constraints appended by `add_dae`
@@ -90,10 +90,10 @@ Let `ℓ_k(·)` be the Lagrange basis over `{0, ρ₁,…,ρ_K}` and `ℓ̇` its
 |---|------|----------|------|
 | C1 | collocation | one of the two forms above | `nz · N · K` |
 | C2 | continuity | `zb_i = Σ_{k=0}^{K} ℓ_k(1) · zc_{i,k}` (`= z_{i,K}` for Radau) | `nz · N` |
-| C3 | initial condition | `zb₀ = z₀(y_{1,·}, u_{1,·}, p, θ)` | `nz` |
-| C4 | algebraic | `g(z_{i,j}, y_{i,j}, u_{i,j}, p, θ, t_{i,j}) = 0` | `ny · N · K` |
-| C5 | path | `c(z_{i,j}, …, θ, t_{i,j}) ≤ 0` | `nc · N · K` |
-| C6 | terminal (10.19h) | `hₑ(zb_N, p, θ) = 0` | `nhE` |
+| C3 | initial condition | `zb₀ = z₀(y_{1,·}, u_{1,·}, p, theta)` | `nz` |
+| C4 | algebraic | `g(z_{i,j}, y_{i,j}, u_{i,j}, p, theta, t_{i,j}) = 0` | `ny · N · K` |
+| C5 | path | `c(z_{i,j}, …, theta, t_{i,j}) ≤ 0` | `nc · N · K` |
+| C6 | terminal (10.19h) | `hₑ(zb_N, p, theta) = 0` | `nhE` |
 
 Bounds `z♭ ≤ z ≤ z♯`, etc. are applied as `lvar/uvar` on the variable blocks at **every
 collocation point**, so each `bounds` entry doubles as a **simple (box) path constraint**
@@ -106,20 +106,20 @@ mirrors the bounds-vs-constraint split in ExaModels, JuMP, and InfiniteOpt.
 ## 3. Proposed `add_dae` signature
 
 Mirrors the README. `tspan` and `init` are **required positional** args (`init` always
-supplies `np`/`nθ`); `u`/`bounds` and discretization options are keyword.
+supplies `np`/`ntheta`); `u`/`bounds` and discretization options are keyword.
 
 ```julia
 core, dae = EMD.add_dae(
     core,
-    f,                  # dz/dt = f(z, y, u, p, θ, t)  → length-nz vector
-    z0,                 # z(t₀) = z0(y, u, p, θ)        → length-nz vector   (NO t — it is the t₀ point)
+    f,                  # dz/dt = f(z, y, u, p, theta, t)  → length-nz vector
+    z0,                 # z(t₀) = z0(y, u, p, theta)        → length-nz vector   (NO t — it is the t₀ point)
     tspan,              # time horizon (t0, tf); a single number T expands to (zero(T), T)
     init;               # initial guesses / parameter values + presence declaration (see below)
 
     # ---- problem structure ----
-    g   = nothing,      # algebraic g(z,y,u,p,θ,t) = 0  → length-ny vector
-    c   = nothing,      # path      c(z,y,u,p,θ,t) ≤ 0  → length-nc vector
-    hE  = nothing,      # terminal  hE(zf,p,θ) = 0      → length-nhE vector (10.19h; NO t — it is the t_f point)
+    g   = nothing,      # algebraic g(z,y,u,p,theta,t) = 0  → length-ny vector
+    c   = nothing,      # path      c(z,y,u,p,theta,t) ≤ 0  → length-nc vector
+    hE  = nothing,      # terminal  hE(zf,p,theta) = 0      → length-nhE vector (10.19h; NO t — it is the t_f point)
 
     # ---- controls ----
     u = nothing,        # fixed control profile u(t)::t->Vector. If GIVEN, u is a FIXED input (and drives
@@ -139,7 +139,7 @@ core, dae = EMD.add_dae(
 ```
 
 `init` — a NamedTuple that both seeds the initial guess and **declares which classes exist**:
-- `init.p`, `init.θ`: length-`np`/`nθ` vectors (time-invariant). `init.θ` is the `add_par` VALUE.
+- `init.p`, `init.theta`: length-`np`/`ntheta` vectors (time-invariant). `init.theta` is the `add_par` VALUE.
 - `init.u`, `init.z`, `init.y`: a scalar / length-`n` vector (broadcast to all collocation points)
   or a callable `t -> vector` (time-varying guess, sampled at collocation points).
 - **Empty/absent ⇒ that class is absent** (`init.p=[]` ⇒ `np=0`, etc.); likewise `u=[]`/omitted ⇒
@@ -147,15 +147,15 @@ core, dae = EMD.add_dae(
   outputs, so no explicit `nz/ny/nu/np/ntheta` kwargs are needed.
 
 Settled conventions:
-- **`p` vs `θ`.** `p` = NLP unknowns (`add_var`, bounded/optimized). `θ` = ExaModels
+- **`p` vs `theta`.** `p` = NLP unknowns (`add_var`, bounded/optimized). `theta` = ExaModels
   parameters (`add_par`, fixed per solve, mutable via `set_parameter!`).
-- **Function arity.** `f(z,y,u,p,θ,t)`; `g/c(z,y,u,p,θ,t)` (`t` last, after `θ`).
-  `z0(y,u,p,θ)` and `hE(zf,p,θ)` **take no `t`** — by definition they are the `t₀` and
+- **Function arity.** `f(z,y,u,p,theta,t)`; `g/c(z,y,u,p,theta,t)` (`t` last, after `theta`).
+  `z0(y,u,p,theta)` and `hE(zf,p,theta)` **take no `t`** — by definition they are the `t₀` and
   `t_f` points respectively.
 - **`u`.** Providing the `u` profile makes `u` a fixed input; omitting it makes `u` a
   decision variable whose initial guess comes from `init.u`.
 - **`init` = `start`.** Each `init.X` maps to ExaModels `add_var`'s `start` for block `X`
-  (initial guess). `init.θ` is the `add_par` value. `init` also supplies the concrete
+  (initial guess). `init.theta` is the `add_par` value. `init` also supplies the concrete
   values that drive simulation-based initialization.
 - **Return form.** Full vector (required — the `length`-based dimension probe and the
   simulator both need it).
@@ -170,13 +170,13 @@ dimensions, warm-start, mesh — degrade independently.
 | Dim | Source | Needs simulation? |
 |-----|--------|-------------------|
 | `np` | `length(init.p)` | no |
-| `nθ` | `length(init.θ)` | no |
+| `ntheta` | `length(init.theta)` | no |
 | `nu` | `length(u(t0))` if `u` given, else `length(init.u)` | no |
 | `nz` | `length` of `f`/`z0` output | no (single evaluation) |
 | `ny` | `length` of `g` output | no (single evaluation) |
 | `nc`, `nhE` | `length` of `c` / `hE` output | no (single evaluation) |
 
-Concrete `init.p/init.θ/u` carry the input-only dims (`np/nθ/nu`) directly. `nz/ny/nc/nhE` are
+Concrete `init.p/init.theta/u` carry the input-only dims (`np/ntheta/nu`) directly. `nz/ny/nc/nhE` are
 output cardinalities, read from one evaluation of each function. `z`/`y` inputs needed to
 perform that evaluation are supplied as duck-typed index-return probes (they respond to
 any index), so no size need be known in advance. **All dimensions are obtainable without
@@ -204,19 +204,19 @@ Applied after the mesh is fixed. All but `:simulate` are integrator-free.
   for `z_start`, `y_start`; `zb` from junction times; `u_start` from `u(t[i,k])`. Only
   available when the integrator has run (§4.2, row 2).
 - **`:constant`** (integrator-free) — compute the *consistent* initial state at `t₀`
-  (`zb₀ = z0(y₀,u(t₀),init.p,init.θ)`, with `y₀` from a small internal Newton solve of
+  (`zb₀ = z0(y₀,u(t₀),init.p,init.theta)`, with `y₀` from a small internal Newton solve of
   `g(zb₀,y₀,…)=0` when `ny>0`), then propagate it as a flat guess: every `z_{i,k}=zb₀`,
   `y_{i,k}=y₀`, `u_{i,k}=u(t[i,k])`. This is the answer to "how do we seed states when the
   user provides the mesh": a consistent IC + constant hold, no integrator. An optional
   lightweight internal explicit stepper on the given mesh can upgrade this guess while
   staying dependency-free.
 - **`:zero`** (integrator-free) — ExaModels default: all starts `= 0`.
-- **`:auto`** — `:simulate` if the integrator ran; else `:constant` if `init.p/init.θ` and
+- **`:auto`** — `:simulate` if the integrator ran; else `:constant` if `init.p/init.theta` and
   a `u` profile are present; else `:zero`.
 
 ### 4.4 Fallback contract
 
-Because `init` is required, `np`/`nθ` (and `nu` via `init.u`) are always available, and
+Because `init` is required, `np`/`ntheta` (and `nu` via `init.u`) are always available, and
 `nz/ny/nc/nhE` come from function outputs — so dimensions never need explicit kwargs. When
 no `u` profile is given (can't simulate), the only extra requirement is a mesh: pass
 `nodes` (or rely on `degree` + uniform over `tspan`). Starts then follow `:constant` if a
@@ -228,27 +228,27 @@ Sufficient to (a) build the objective, (b) add further constraints, (c) recover
 trajectories from a solution.
 
 ```julia
-struct CollocationData
+struct DAEta
     # variable handles (ExaModels Variable / Parameter objects)
     z          # differential collocation states z_{i,j}
     zb         # boundary states zb_i (i=0..N);  zb[end] == zf
     y          # algebraic states y_{i,j}
     u          # controls u_{i,j}
     p          # decision parameters (Variable)
-    θ          # ExaModels parameters (Parameter)
+    theta          # ExaModels parameters (Parameter)
 
     # dimensions
-    nz; ny; nu; np; nθ
+    nz; ny; nu; np; ntheta
     N          # finite elements
     K          # collocation points per element (degree)
 
     # mesh & collocation layout
     nodes      # element boundaries τ̂₀..τ̂_N          (length N+1)
     h          # element lengths hᵢ                   (length N)
-    ρ          # collocation roots in (0,1]           (length K)
+    tau        # collocation roots in (0,1]           (length K)
     t          # collocation times t_{i,j}            (N × K)
-    D          # Lagrange differentiation matrix / RK (a_{jk}, b_j)
-    ω1         # interpolation weights ℓ_k(1)
+    A          # general collocation weights a_{jk} (Lagrange diff. matrix / RK Butcher A)
+    b          # general final weights b_k (interpolation weights ℓ_k(1) / RK Butcher b)
 
     # convenience
     zf        # handle for terminal state zb_N
@@ -261,7 +261,7 @@ end
 
 ```julia
 core, dae = EMD.add_dae(core, f, z0; hE=hE, degree=3, roots=EMD.GaussRadau(),
-                         u=u_nominal, init=(p=p0, θ=θ0))
+                         u=u_nominal, init=(p=p0, theta=theta0))
 
 # Mayer term φ(zf):
 @add_obj(core, (dae.zf[k] - z_ref[k])^2 for k in 1:dae.nz)
@@ -272,14 +272,14 @@ core, dae = EMD.add_dae(core, f, z0; hE=hE, degree=3, roots=EMD.GaussRadau(),
 
 ## 6. Internal module mapping
 
-- `roots.jl` — `GaussRadau/Legendre/Lobatto` → roots `ρ`, quadrature weights.
+- `roots.jl` — `GaussRadau/Legendre/Lobatto` → roots `τ`, quadrature weights.
 - `polynomial.jl` — `LagrangeInterpolation` → basis `ℓ_k`, values `ℓ_k(1)`.
 - `basis.jl` — `Lagrange` → differentiation matrix `D`; `RungeKutta` → Butcher `(a,b)`.
   Both emit the C1 collocation-constraint generator.
 - `nodes.jl` — uniform mesh generation when `nodes === nothing` and no simulation.
 - `initialize.jl` — dimension probing, consistent-IC / constant warm-start, block
   allocation with bounds/starts, assembly of C1–C6.
-- `structs.jl` — `CollocationData` + strategy type definitions.
+- `structs.jl` — `DAEta` + strategy type definitions.
 - **`ext/…OrdinaryDiffEqExt.jl`** — forward-solve mesh + `:simulate` warm-start; loaded
   only when OrdinaryDiffEq is available and a mesh must be generated.
 
@@ -287,11 +287,11 @@ core, dae = EMD.add_dae(core, f, z0; hE=hE, degree=3, roots=EMD.GaussRadau(),
 
 - [ ] Dimensions inferred from `init`/`u` + function outputs (no explicit dim kwargs).
 - [ ] `init`/`u` empty-or-absent ⇒ that class is absent (dimension 0).
-- [ ] `θ` threaded into `f, z0, g, c, hE`; realized as an `@add_par` block from `init.θ`.
-- [ ] `bounds`/`init` NamedTuples map to `lvar/uvar`/`start` on `z, y, u, p`; `θ` value
-      from `init.θ`. `u` given ⇒ fixed input; omitted ⇒ decision variable.
-- [ ] General initial-condition constraint `z0(y,u,p,θ)` (C3).
-- [ ] Terminal constraint `hE(zf, p, θ)` (C6, Eq. 10.19h).
+- [ ] `theta` threaded into `f, z0, g, c, hE`; realized as an `@add_par` block from `init.theta`.
+- [ ] `bounds`/`init` NamedTuples map to `lvar/uvar`/`start` on `z, y, u, p`; `theta` value
+      from `init.theta`. `u` given ⇒ fixed input; omitted ⇒ decision variable.
+- [ ] General initial-condition constraint `z0(y,u,p,theta)` (C3).
+- [ ] Terminal constraint `hE(zf, p, theta)` (C6, Eq. 10.19h).
 - [ ] `basis` dispatch producing C1 in Lagrange *or* Runge–Kutta form from shared roots.
 - [ ] Forward-solve init (dims + `:simulate` warm-start + adaptive mesh) behind an
       OrdinaryDiffEq extension; **never loaded when `nodes` is provided**.
