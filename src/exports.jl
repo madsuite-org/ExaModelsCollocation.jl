@@ -39,12 +39,12 @@ function add_dae(
       bounds = (;),
       nodes = nothing,
       degree = 4,
-      basis = ExaModelsDynamic.StateForm(),
-      polynomial = ExaModelsDynamic.Lagrange(),
-      roots = ExaModelsDynamic.GaussRadau()
+      basis = ExaModelsDAE.StateForm(),
+      polynomial = ExaModelsDAE.Lagrange(),
+      roots = ExaModelsDAE.GaussRadau()
   )
   # Warnings for unsupported features
-  polynomial isa ExaModelsDynamic.Lagrange() || error("Only Lagrange interpolation polynomials are supported.")
+  polynomial isa ExaModelsDAE.Lagrange() || error("Only Lagrange interpolation polynomials are supported.")
 
   
 

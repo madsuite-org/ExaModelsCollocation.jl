@@ -26,7 +26,7 @@ z(0) = (0,\; p_1,\; 0)
 
 ```julia
 using ExaModels
-using ExaModelsDynamic as EMD
+using ExaModelsDAE as EMD
 
 # dz/dt — returns [ż₁, ż₂, ż₃]; ż₃ accumulates the running cost
 function f(z, y, u, p, theta, t)

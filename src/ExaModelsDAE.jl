@@ -1,9 +1,9 @@
 """
-    ExaModelsDynamic
+    ExaModelsDAE
 
 Automatically transcribes differential equations as algebraic constraints in ExaModels.jl
 """
-module ExaModelsDynamic
+module ExaModelsDAE
 
 import ExaModels: 
     ExaCore, 

@@ -52,7 +52,7 @@ where
 
 ```julia
 using ExaModels
-using ExaModelsDynamic as EMD
+using ExaModelsDAE as EMD
 
 core = ExaModels.ExaCore(; backend = CUDA.Backend(), concrete = Val(true))
 

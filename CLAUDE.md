@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this package does
 
-ExaModelsDynamic.jl automatically transcribes differential-algebraic equations (DAEs) into algebraic constraints inside an [ExaModels.jl](https://github.com/exanauts/ExaModels.jl) `ExaCore`, so dynamic optimization problems can be solved on CPU or GPU backends. The user supplies plain Julia functions for the dynamics `dz/dt = f(z,y,u,p,t)`, initial conditions `z0(y,u,p)`, and optional algebraic/path constraints; the package discretizes them via a chosen collocation scheme and appends the resulting equations as constraints.
+ExaModelsDAE.jl automatically transcribes differential-algebraic equations (DAEs) into algebraic constraints inside an [ExaModels.jl](https://github.com/exanauts/ExaModels.jl) `ExaCore`, so dynamic optimization problems can be solved on CPU or GPU backends. The user supplies plain Julia functions for the dynamics `dz/dt = f(z,y,u,p,t)`, initial conditions `z0(y,u,p)`, and optional algebraic/path constraints; the package discretizes them via a chosen collocation scheme and appends the resulting equations as constraints.
 
 State/variable convention used throughout the API: `z` = differential state, `y` = algebraic state, `u` = control, `p` = parameter, `t` = time.
 
@@ -16,7 +16,7 @@ The **README is the spec for the intended public API**; treat it as the source o
 
 ## Architecture (intended)
 
-`src/ExaModelsDynamic.jl` is the module entry point. It `include`s files in dependency order and exports the single public entry point `add_dae`. The include order matters — `structs.jl` first, then `utils`, `initialize`, `nodes`, `basis`, `polynomial`, `roots`, then `exports`.
+`src/ExaModelsDAE.jl` is the module entry point. It `include`s files in dependency order and exports the single public entry point `add_dae`. The include order matters — `structs.jl` first, then `utils`, `initialize`, `nodes`, `basis`, `polynomial`, `roots`, then `exports`.
 
 The public flow (see README) is a single call:
 ```julia
@@ -43,7 +43,7 @@ julia --project=. -e 'using Pkg; Pkg.test()'
 ]test
 
 # Load/develop interactively
-julia --project=. -e 'using ExaModelsDynamic'
+julia --project=. -e 'using ExaModelsDAE'
 
 # Run a single testset while iterating (once tests exist), e.g.:
 julia --project=. test/runtests.jl

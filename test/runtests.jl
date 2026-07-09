@@ -1,9 +1,9 @@
-using ExaModelsDynamic
+using ExaModelsDAE
 using Test
 
-const EMD = ExaModelsDynamic
+const EMD = ExaModelsDAE
 
-@testset "ExaModelsDynamic.jl" begin
+@testset "ExaModelsDAE.jl" begin
     @testset "strategy types" begin
         @test EMD.GaussRadau() isa EMD.AbstractRoots
         @test EMD.GaussLegendre() isa EMD.AbstractRoots
@@ -16,17 +16,17 @@ const EMD = ExaModelsDynamic
     end
 
     @testset "public API" begin
-        @test isdefined(ExaModelsDynamic, :add_dae)
+        @test isdefined(ExaModelsDAE, :add_dae)
         # add_dae is exported; strategy types are accessed qualified (EMD.…)
-        @test :add_dae in names(ExaModelsDynamic)
+        @test :add_dae in names(ExaModelsDAE)
     end
 
-    @testset "CollocationData" begin
-        dae = EMD.CollocationData(
+    @testset "DAEta" begin
+        dae = EMD.DAEta(
             nothing, nothing, nothing, nothing, nothing, nothing, nothing,  # handles
             2, 0, 1, 1, 0, 10, 3,                                           # dims
-            collect(0.0:0.1:1.0), fill(0.1, 10), [0.3, 0.7, 1.0],           # nodes, h, ρ
-            zeros(10, 3), zeros(4, 4), [0.0, 0.0, 0.0, 1.0],                # t, D, ω1
+            collect(0.0:0.1:1.0), fill(0.1, 10), [0.3, 0.7, 1.0],           # nodes, h, tau
+            zeros(10, 3), zeros(4, 4), [0.0, 0.0, 0.0, 1.0],                # t, A, b
             (basis = EMD.StateForm(), polynomial = EMD.Lagrange(), roots = EMD.GaussRadau()),
             (;),
         )
@@ -35,6 +35,6 @@ const EMD = ExaModelsDynamic
         @test dae.N == 10
         @test dae.K == 3
         @test dae.method.roots isa EMD.GaussRadau
-        @test occursin("CollocationData", sprint(show, dae))
+        @test occursin("DAEta", sprint(show, dae))
     end
 end

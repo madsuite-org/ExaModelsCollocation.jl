@@ -1,4 +1,4 @@
 [deps]
 ExaModels = "1037b233-b668-4ce9-9b63-f9f681f55dd2"
-ExaModelsDynamic = "806a8761-d632-41d1-aec4-b1285f27c7c5"
+ExaModelsDAE = "806a8761-d632-41d1-aec4-b1285f27c7c5"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

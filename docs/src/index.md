@@ -1,8 +1,8 @@
 ```@meta
-CurrentModule = ExaModelsDynamic
+CurrentModule = ExaModelsDAE
 ```
 
-# ExaModelsDynamic.jl
+# ExaModelsDAE.jl
 
 Automatically transcribes differential-algebraic equations (DAEs) into algebraic
 constraints in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl), so dynamic
@@ -19,7 +19,7 @@ objective is then built separately against `dae`.
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/mit-shin-group/ExaModelsDynamic.jl")
+Pkg.add(url = "https://github.com/mit-shin-group/ExaModelsDAE.jl")
 ```
 
 ## Contents

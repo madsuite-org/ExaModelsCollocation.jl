@@ -1,14 +1,14 @@
-using ExaModelsDynamic
+using ExaModelsDAE
 using Documenter
 
-DocMeta.setdocmeta!(ExaModelsDynamic, :DocTestSetup, :(using ExaModelsDynamic); recursive = true)
+DocMeta.setdocmeta!(ExaModelsDAE, :DocTestSetup, :(using ExaModelsDAE); recursive = true)
 
 makedocs(;
-    modules = [ExaModelsDynamic],
+    modules = [ExaModelsDAE],
     authors = "Joseph Choi <jsphchoi@mit.edu>",
-    sitename = "ExaModelsDynamic.jl",
+    sitename = "ExaModelsDAE.jl",
     format = Documenter.HTML(;
-        canonical = "https://mit-shin-group.github.io/ExaModelsDynamic.jl",
+        canonical = "https://mit-shin-group.github.io/ExaModelsDAE.jl",
         edit_link = "main",
         assets = String[],
     ),
@@ -20,6 +20,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo = "github.com/mit-shin-group/ExaModelsDynamic.jl",
+    repo = "github.com/mit-shin-group/ExaModelsDAE.jl",
     devbranch = "main",
 )

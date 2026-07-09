@@ -1,10 +1,10 @@
-# ExaModelsDynamic.jl
+# ExaModelsDAE.jl
 
 Automatically transcribes differential equations as algebraic constraints in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl).
 
-[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://mit-shin-group.github.io/ExaModelsDynamic.jl/stable/)
-[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://mit-shin-group.github.io/ExaModelsDynamic.jl/dev/)
-[![Build Status](https://github.com/mit-shin-group/ExaModelsDynamic.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/mit-shin-group/ExaModelsDynamic.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://mit-shin-group.github.io/ExaModelsDAE.jl/stable/)
+[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://mit-shin-group.github.io/ExaModelsDAE.jl/dev/)
+[![Build Status](https://github.com/mit-shin-group/ExaModelsDAE.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/mit-shin-group/ExaModelsDAE.jl/actions/workflows/CI.yml?query=branch%3Amain)
 
 ## Usage
 Define a differential-algebraic system
@@ -38,7 +38,7 @@ where
 Discretize and append the constraints with `add_dae`:
 ```julia
 using ExaModels
-using ExaModelsDynamic as EMD
+using ExaModelsDAE as EMD
 
 # Initialize ExaCore
 core = ExaModels.ExaCore(; concrete = Val(true))
@@ -91,7 +91,7 @@ $$
 
 ```julia
 using ExaModels
-using ExaModelsDynamic as EMD
+using ExaModelsDAE as EMD
 
 # Right-hand side function, returns [ż₁, ż₂, ż₃] evaluations
 function f(z, y, u, p, theta, t)
