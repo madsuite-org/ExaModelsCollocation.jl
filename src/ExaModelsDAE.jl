@@ -6,19 +6,18 @@ Automatically transcribes differential equations as algebraic constraints in Exa
 module ExaModelsDAE
 
 import ExaModels: 
-    ExaCore, 
-    ExaModels
+    ExaCore
 import FastGaussQuadrature
 
-include("structs.jl")
 include("utils.jl")
 
 for file in [
-        "basis",    
-        "polynomial",
         "taus",
+        "polynomial",
+        "basis",
+        "initialize",
         "mesh",
-        "initialization",
+        "daeta",
         "variables",
         "collocation",
         "continuity",

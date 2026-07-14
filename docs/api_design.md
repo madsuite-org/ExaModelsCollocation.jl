@@ -131,8 +131,8 @@ core, dae = EMD.add_dae(
     # ---- discretization ----
     nodes      = nothing,              # element boundaries; if given, NO forward-solve mesh (integrator not loaded)
     degree     = 4,                    # collocation points per element
-    basis      = EMD.StateForm(),      # {StateForm(), DerivativeForm()}
     polynomial = EMD.Lagrange(),       # {Lagrange()}
+    basis      = EMD.StateForm(),      # {StateForm(), DerivativeForm()}
     roots      = EMD.GaussRadau(),     # {GaussRadau(), GaussLegendre(), GaussLobatto()}
     adaptive   = false,                # false: t[i,j]/τ_k/h[i] as constants; true: as ExaModels parameters (AMR)
 )
@@ -308,7 +308,7 @@ The families differ only in where `τ₁..τ_K` sit: Radau `τ_K = 1`; Legendre 
 `(0,1)`; Lobatto `τ_K = 1` as well (its left endpoint coincides with `τ₀`, not double-counted).
 
 Helper contracts:
-- `roots.jl` — `_get_roots(r::AbstractRoots, K)` dispatches on `GaussRadau/GaussLegendre/GaussLobatto`
+- `taus.jl` — `_get_roots(r::AbstractRoots, K)` dispatches on `GaussRadau/GaussLegendre/GaussLobatto`
   and returns `(τ = [0, τ₁..τ_K], w)`: the collocation points (roots of the shifted Gauss-Jacobi
   polynomial) with `0` prepended, and the `K` quadrature weights over `τ₁..τ_K` for user-side
   integral objective terms.
@@ -326,13 +326,13 @@ Helper contracts:
   `StateForm` anchors the polynomial at `0` (the boundary state); `DerivativeForm` represents the
   derivative over just the collocation points. Same math from both directions, which is why they
   share `roots`.
-- `nodes.jl` — `_create_mesh(nodes, tspan, τ)` returns `(nodes, h, t)`. Two paths: user `nodes`
+- `mesh.jl` — `_create_mesh(nodes, tspan, τ)` returns `(nodes, h, t)`. Two paths: user `nodes`
   (`N = length(nodes) - 1`, boundaries as given), or `nodes === nothing` routing to the
   OrdinaryDiffEq extension whose adaptive steps become the boundaries. `h[i] = nodes[i+1] - nodes[i]`,
   `t[i,j] = nodes[i] + h[i]·τ_j`.
-- `initialization.jl` — dimension probing (§4.1), consistent-IC / constant warm-start, block
+- `initialize.jl` — dimension probing (§4.1), consistent-IC / constant warm-start, block
   allocation with bounds/starts, assembly of C1–C6 into `DAEta`.
-- `structs.jl` — `DAEta` + strategy type definitions.
+- `daeta.jl` — the `DAEta` struct.
 - **`ext/…OrdinaryDiffEqExt.jl`** — forward-solve mesh + `:simulate` warm-start; loaded only when
   OrdinaryDiffEq is available and `nodes === nothing`.
 
@@ -341,7 +341,7 @@ resolved-spec object (dims, presence flags, reference `τ/w/A/b`, per-element `n
 init/bounds, `method = (basis, polynomial, roots)`) that flows into every `_create_*` generator and
 largely populates `DAEta`. Under `adaptive = true` the reference/mesh arrays are realized as
 ExaModels parameters (mutable for refinement); under `adaptive = false` they stay constants. This is
-the immutable-weights vs AMR-mutable split noted in `structs.jl`.
+the immutable-weights vs AMR-mutable split noted in `daeta.jl`.
 
 ## 7. What "complete" requires (checklist)
 

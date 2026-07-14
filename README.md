@@ -66,8 +66,8 @@ core, dae = EMD.add_dae(core, f, z0, tspan, init;
                 p = ...),        
   nodes      = tstops,           # Interval node placements (auto-chosen if not supplied)
   degree     = K,                # Degree of interpolating polynomial (defaults to 4)
-  basis      = EMD.StateForm(),  # Basis representation for differential states {StateForm(), DerivativeForm()}
   polynomial = EMD.Lagrange(),   # Interpolating polynomial
+  basis      = EMD.StateForm(),  # Basis representation for differential states {StateForm(), DerivativeForm()}
   roots      = EMD.GaussRadau(), # Collocation points {GaussRadau(),0 GaussLegendre(), GaussLobatto()}
 )
 ```

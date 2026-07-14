@@ -19,8 +19,8 @@ kwargs:
 - `bounds`: variable bounds
 - `nodes`: vector of interval boundary points
 - `degree`: number of interpolating points per interval (degree of interpolating polynomial)
-- `basis`: differential-state basis, [`StateForm()`](@ref) (default) or [`DerivativeForm()`](@ref)
 - `polynomial`: interpolating polynomial, only [`Lagrange()`](@ref) (default) supported
+- `basis`: differential-state basis, [`StateForm()`](@ref) (default) or [`DerivativeForm()`](@ref)
 - `roots`: collocation points, [`GaussRadau()`](@ref) (default), [`GaussLegendre()`](@ref),
   or [`GaussLobatto()`](@ref)
 
@@ -39,36 +39,38 @@ function add_dae(
         bounds::NamedTuple = (;),
         nodes::Union{Nothing, AbstractVector} = nothing,
         degree::Integer = 4,
-        basis::AbstractBasis = ExaModelsDAE.StateForm(),
         polynomial::AbstractPolynomial = ExaModelsDAE.Lagrange(),
+        basis::AbstractBasis = ExaModelsDAE.StateForm(),
         roots::AbstractRoots = ExaModelsDAE.GaussRadau(),
         adaptive::Bool = false
-    )::Tuple{ExaCore, DAEta}
+    )
     # Warnings for unsupported features
     # polynomial.jl
     polynomial isa ExaModelsDAE.Lagrange || error("Only Lagrange interpolation polynomials are supported currently.")
 
-    # roots.jl: obtain K+1 interpolation points, taus = {tau0 = 0, ..., tauK}
+    # taus.jl: obtain K+1 interpolation points, taus = {tau0 = 0, ..., tauK}
     taus = _get_taus(roots, degree)
 
-    # get A (ajk), b (bj) as constants; needs tau, so must follow _get_roots
-    # basis.jl: get collocation and continuity weights
+    # basis.jl: get collocation and continuity weights A (ajk), b (bj) as constants
     weights = _get_weights(basis, polynomial, taus)
 
-    # OrdinaryDiffEq.jl to adpatively foward solve for mesh
+    # initialize.jl: OrdinaryDiffEq.jl to adpatively foward solve for mesh
+    # ...
 
-    DAEinfo = DAEInfo(f, z0, g, c, hE, u, taus, mesh)
+    # mesh.jl: create tij, hi info (for future AMR support)
+    core, mesh = _create_mesh(core, tspan, init, nodes, taus)
+
+    # ...
+    dae = DAEta(f, z0, g, c, hE, u, taus, mesh)
     # DAEta
         # Callback Functions
             # f, z0, g, c, hE, u
         # Constants
             # taus, weights
         # Dimensions
-            # Nz, Np, ...
+            # N, K, Nz, Np, ...
         # Variable/parameter handles
-
-    # nodes.jl: create tij, hi info (for future AMR support)
-    core, mesh = _create_mesh(core, tspan, init, nodes, taus)
+            # ...
     
     # parameters.jl: theta[:] as ExaModels parameters (+ t[i,j], h[i] for future AMR support)
     # tij, hi are constants left as constants if adaptive = false
@@ -94,9 +96,6 @@ function add_dae(
 
     # TODO terminalcons.jl: hE(z,y,u,p,theta) = 0
     core = _create_termincalcons(core)
-
-    # TODO Display DAEta information
-    # ...
 
     # Return ExaCore and DAEta
     return core, dae

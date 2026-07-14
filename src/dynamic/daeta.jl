@@ -1,33 +1,5 @@
-"""
-    BasisWeights{T}
-
-Reference-element collocation weights produced by `_get_weights(basis, polynomial, tau)`.
-Constant for a fixed `(basis, polynomial, roots, K)`, built once and reused across every
-r-/h-refinement step. Entries depend on `basis`:
-
-| `basis`          | `A[j,k]` = `ajk` | `b[j]` = `bj` |
-|------------------|------------------|---------------|
-| `StateForm`      | `dℓⱼ(τₖ)`        | `ℓⱼ(1)`       |
-| `DerivativeForm` | `Ωⱼ(τₖ)`         | `Ωⱼ(1)`       |
-
-# Fields
-- `A`   — collocation matrix, entries `ajk`
-- `b`   — endpoint / continuity weights, entries `bj`
-- `tau` — collocation roots `τ₁..τ_K` in `(0,1]` the weights were built on
-"""
-struct BasisWeights{T}
-    A::Matrix{T}
-    b::Vector{T}
-    tau::Vector{T}
-end
-
-# Metadata returned by `add_dae`. Holds the variable/parameter handles created on the
-# ExaCore, the discretization dimensions, the mesh/collocation layout, and the appended
-# constraint handles — everything the user needs to build an objective, add further
-# constraints, or recover trajectories from a solution. See `docs/api_design.md` §5.
-
-# TODO: complete remake, remove ExaModels parameter-related things.
-#       distinguish definite immutable stuff (weights) and AMR-mutable stuff
+# Main DAEta struct
+# TODO distinguish definite immutable values vs mutables
 """
     DAEta
 
