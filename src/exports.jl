@@ -50,24 +50,22 @@ function add_dae(
 
     # ---------- Create DAEta things ----------
     # DAEta field 1. meta: NamedTuple of user inputs
-    meta = (; tspan, init, bounds, nodes, polynomial, basis, roots)
+    meta = (; tspan, init, bounds, nodes, degree, polynomial, basis, roots, adaptive)
     
     # DAEta field 2. callbacks: DAECallbacks of user problem funxtions
     callbacks = DAECallbacks(f, z0, g, c, hE, u)
 
+    # DAEta field 3. weights: BasisWeights based on polynomial and basis
     # taus.jl: K+1 interpolation points, taus = {tau0 = 0, ..., tauK}
     taus = _get_taus(roots, degree)
-
-    # DAEta field 3. weights: BasisWeights based on polynomial and basis
-    # basis.jl: collocation and continuity weights A (ajk), b (bj)
+    # basis.jl: collocation and continuity weights A (ajk), b (bj) and taus
     weights = _get_weights(polynomial, basis, taus)
 
-    # initialize.jl: OrdinaryDiffEq.jl forward solve for the mesh
-    init_full = _get_init_full(meta, callbacks, taus)
-
     # DAEta field 4. mesh: CollocationMesh
+    # initialize.jl: OrdinaryDiffEq.jl forward solve for the mesh
+    init_full = _get_init_full(meta, callbacks)
     # mesh.jl: tij, hi info
-    mesh = _get_mesh(meta, callbacks, taus, init_full, adaptive)
+    mesh = _get_mesh(meta, callbacks, init_full)
 
     # DAEta field 5. dims: DAEDims
     dims = _get_dims(meta, mesh)

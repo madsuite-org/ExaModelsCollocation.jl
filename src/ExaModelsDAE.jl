@@ -18,6 +18,7 @@ for file in [
         "initialize",
         "mesh",
         "daeta",
+        "parameters",
         "variables",
         "collocation",
         "continuity",

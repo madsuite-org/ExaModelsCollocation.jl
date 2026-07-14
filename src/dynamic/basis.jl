@@ -34,12 +34,14 @@ struct DerivativeForm <: AbstractBasis end
 Contains the collocation and continuity weights
 
 # Fields
-- `A`: collocation constraint weights A[j,k], j=0,...,K, k=1,...,K. jth basis polynomial evaluated at tau[k]
+- `A`: collocation constraint weights A[j,k], j=0,...,K, k=1,...,K. jth basis polynomial evaluated at taus[k]
 - `b`: continuity constraint weights b[j], j=0,...,K. jth basis polynomial evaluated at tau=1
+- `taus` : interpolation pounts taus[j], j=0,...,K. taus[0]=0, taus[j] in (0,1]
 """
 struct BasisWeights{T}
     A::AbstractMatrix{T}
     b::AbstractVector{T}
+    taus::AbstractVector{T}
 end
 
 function _get_weights(polynomial::AbstractPolynomial, basis::AbstractBasis, taus::AbstractVector{T}) where {T <: Real}
@@ -49,7 +51,7 @@ function _get_weights(polynomial::AbstractPolynomial, basis::AbstractBasis, taus
     # Get continuity weights b[j]
     b = _get_weights_b(polynomial, basis, taus)
     
-    return BasisWeights(A, b)
+    return BasisWeights(A, b, taus)
 end
 
 _get_weights_A(::Lagrange, ::StateForm, taus) = delljk(taus)

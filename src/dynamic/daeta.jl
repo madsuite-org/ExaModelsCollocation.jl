@@ -60,13 +60,15 @@ The user can write constraints and objectives separately from this struct.
                 `init`,
                 `bounds`,
                 `nodes`,
+                `degree`,
                 `polynomial`,
                 `basis`,
-                `roots`
+                `roots`,
+                `adaptive`
 - `callbacks` : [`DAECallbacks`](@ref) of the user problem functions `f, z0, g, c, hE, u`
-- `weights`   : [`BasisWeights`](@ref) `A`, `b`
-- `mesh`      : [`CollocationMesh`](@ref): `taus`, `t[i,j]`, `h[i]`, `isadaptive`
-- `dims`      : [`DAEDims`](@ref) problem dimensions
+- `weights`   : [`BasisWeights`](@ref) `A`, `b`, `taus`
+- `mesh`      : [`CollocationMesh`](@ref): `t[i,j]`, `h[i]`
+- `dims`      : [`DAEDims`](@ref) problem dimensions0
 - `vars`      : NamedTuple of ExaModels variable/parameter handles:
                 `z` differential collocation states,
                 `y` algebraic collocation states,
