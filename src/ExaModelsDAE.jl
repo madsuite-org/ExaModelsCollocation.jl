@@ -16,9 +16,8 @@ include("utils.jl")
 for file in [
         "basis",    
         "polynomial",
-        "roots",
+        "taus",
         "mesh",
-        "polynomial",
         "initialization",
         "variables",
         "collocation",

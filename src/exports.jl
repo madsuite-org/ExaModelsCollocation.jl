@@ -49,7 +49,7 @@ function add_dae(
     polynomial isa ExaModelsDAE.Lagrange || error("Only Lagrange interpolation polynomials are supported currently.")
 
     # roots.jl: obtain K+1 interpolation points, taus = {tau0 = 0, ..., tauK}
-    taus = _get_roots(roots, degree)
+    taus = _get_taus(roots, degree)
 
     # get A (ajk), b (bj) as constants; needs tau, so must follow _get_roots
     # basis.jl: get collocation and continuity weights
@@ -57,12 +57,21 @@ function add_dae(
 
     # OrdinaryDiffEq.jl to adpatively foward solve for mesh
 
+    DAEinfo = DAEInfo(f, z0, g, c, hE, u, taus, mesh)
+    # DAEta
+        # Callback Functions
+            # f, z0, g, c, hE, u
+        # Constants
+            # taus, weights
+        # Dimensions
+            # Nz, Np, ...
+        # Variable/parameter handles
 
     # nodes.jl: create tij, hi info (for future AMR support)
     core, mesh = _create_mesh(core, tspan, init, nodes, taus)
     
-    # parameters.jl: tau[j/k], t[i,j], h[i], theta[:] as ExaModels parameters (for future AMR support)
-    # tauj/k, tij, hi are constants left as constants if adaptive = false
+    # parameters.jl: theta[:] as ExaModels parameters (+ t[i,j], h[i] for future AMR support)
+    # tij, hi are constants left as constants if adaptive = false
     core = _create_parameters(core)
 
     # variables.jl: z[v,i,k,c], y[v,i,k,c], u[v,i,k,c], p[:], (c=[Nc] for future multi-condition support)
@@ -77,17 +86,17 @@ function add_dae(
     # initialcons.jl: z(t0) = z0(y,u,p,theta)
     core = _create_initialcons(core)
 
-    # algebraic.jl: g(z,y,u,p,theta,t) = 0
+    # TODO algebraic.jl: g(z,y,u,p,theta,t) = 0
     core = _create_algebraic(core)
 
-    # pathcons.jl: c(z,y,u,p,theta,t) \le 0
+    # TODO pathcons.jl: c(z,y,u,p,theta,t) \le 0
     core = _create_pathcons(core)
 
-    # terminalcons.jl: hE(z,y,u,p,theta) = 0
+    # TODO terminalcons.jl: hE(z,y,u,p,theta) = 0
     core = _create_termincalcons(core)
 
-    # Display DAEta information
-    display(dae)
+    # TODO Display DAEta information
+    # ...
 
     # Return ExaCore and DAEta
     return core, dae
