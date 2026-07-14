@@ -60,19 +60,20 @@ end
 """
     Omegajk(taus) -> Matrix
 
-Collocation weights `A[j,k] = Ωⱼ(τₖ)` with `Ωⱼ(τ) = ∫₀^τ ℓ̄ⱼ`, the integrated Lagrange
-basis over the collocation points `roots = τ₁..τ_K`. Rows `j = 1..K` (basis),
-columns `k = 1..K` (collocation); size `K × K`.
+Collocation weights `A[j,k] = Ωⱼ(τₖ)` with `Ωⱼ(τ) = ∫₀^τ ℓⱼ`, the integrated Lagrange
+basis over the nodes `taus = [0, τ₁..τ_K]`, evaluated at the collocation points `τ₁..τ_K`.
+Rows `j = 0..K` (basis), columns `k = 1..K` (collocation); size `(K+1) × K`.
 """
 function Omegajk(taus)
-    roots = taus[2:end]
+    n = length(taus)                      # n = K+1
+    roots = taus[2:end]                   # collocation points τ₁..τ_K
     K = length(roots)
-    w = _baryweights(roots)
+    w = _baryweights(taus)
 
-    # Column k holds the basis integrated from 0 to the kth collocation point
-    A = zeros(eltype(roots), K, K)
+    # Column k holds each basis integrated from 0 to the kth collocation point
+    A = zeros(eltype(taus), n, K)
     for k in 1:K
-        A[:, k] = _integrate_basis(roots, w, roots[k])
+        A[:, k] = _integrate_basis(taus, w, roots[k])
     end
     return A
 end
@@ -80,13 +81,12 @@ end
 """
     Omega1j(taus) -> Vector
 
-Continuity weights `b[j] = Ωⱼ(1) = ∫₀^1 ℓ̄ⱼ`, the integrated Lagrange basis over the
-collocation points `roots = τ₁..τ_K` at the right endpoint. Length `K`.
+Continuity weights `b[j] = Ωⱼ(1) = ∫₀^1 ℓⱼ`, the integrated Lagrange basis over the
+nodes `taus = [0, τ₁..τ_K]` at the right endpoint. Length `K+1`.
 """
 function Omega1j(taus)
-    roots = taus[2:end]
-    w = _baryweights(roots)
-    return _integrate_basis(roots, w, one(eltype(roots)))
+    w = _baryweights(taus)
+    return _integrate_basis(taus, w, one(eltype(taus)))
 end
 
 # Barycentric weights wᵢ = 1 / ∏_{j≠i}(xᵢ - xⱼ) for distinct nodes x
@@ -109,7 +109,7 @@ function _lagrange(x, w, t)
     return terms ./ sum(terms)
 end
 
-# Integrated basis [∫₀^b ℓⱼ] via Gauss-Legendre quadrature, exact for degree K-1
+# Integrated basis [∫₀^b ℓⱼ] via Gauss-Legendre quadrature, exact for the degree n-1 basis
 function _integrate_basis(x, w, b)
     n = length(x)
     gx, gw = FastGaussQuadrature.gausslegendre(n)
