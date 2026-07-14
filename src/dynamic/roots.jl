@@ -32,3 +32,8 @@ struct GaussLegendre <: AbstractRoots end
 Lobatto collocation points: `K` roots including both endpoints `τ = 0` and `τ = 1`.
 """
 struct GaussLobatto <: AbstractRoots end
+
+function _get_roots(::AbstractRoots, degree::T)::Vector{T} where {T <: Real}
+
+    return taus
+end

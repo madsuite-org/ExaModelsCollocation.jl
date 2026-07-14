@@ -1,8 +1,33 @@
+"""
+    BasisWeights{T}
+
+Reference-element collocation weights produced by `_get_weights(basis, polynomial, tau)`.
+Constant for a fixed `(basis, polynomial, roots, K)`, built once and reused across every
+r-/h-refinement step. Entries depend on `basis`:
+
+| `basis`          | `A[j,k]` = `ajk` | `b[j]` = `bj` |
+|------------------|------------------|---------------|
+| `StateForm`      | `dℓⱼ(τₖ)`        | `ℓⱼ(1)`       |
+| `DerivativeForm` | `Ωⱼ(τₖ)`         | `Ωⱼ(1)`       |
+
+# Fields
+- `A`   — collocation matrix, entries `ajk`
+- `b`   — endpoint / continuity weights, entries `bj`
+- `tau` — collocation roots `τ₁..τ_K` in `(0,1]` the weights were built on
+"""
+struct BasisWeights{T}
+    A::Matrix{T}
+    b::Vector{T}
+    tau::Vector{T}
+end
+
 # Metadata returned by `add_dae`. Holds the variable/parameter handles created on the
 # ExaCore, the discretization dimensions, the mesh/collocation layout, and the appended
 # constraint handles — everything the user needs to build an objective, add further
 # constraints, or recover trajectories from a solution. See `docs/api_design.md` §5.
 
+# TODO: complete remake, remove ExaModels parameter-related things.
+#       distinguish definite immutable stuff (weights) and AMR-mutable stuff
 """
     DAEta
 
@@ -27,27 +52,26 @@ Dimensions: `nz`, `ny`, `nu`, `np`, `ntheta`; `N` finite elements; `K` collocati
 per element (`= degree`).
 
 Mesh & collocation layout:
+- `weights` — reference-element [`BasisWeights`](@ref) (`A`, `b`, `tau`)
+- `w`  — quadrature weights over the collocation roots (length `K`)
 - `nodes` — element boundaries `τ̂₀..τ̂_N` (length `N+1`)
 - `h`  — element lengths `hᵢ` (length `N`)
-- `tau` — collocation roots in `(0,1]` (length `K`)
 - `t`  — collocation times `t_{i,j}` (`N × K`)
-- `A`  — general collocation weights `a_{jk}` (Lagrange differentiation matrix, or Runge–Kutta Butcher `A`)
-- `b`  — general final weights `b_k` (interpolation weights `ℓ_k(1)`, or Runge–Kutta Butcher `b`)
 
 Convenience:
 - `method` — NamedTuple `(basis, polynomial, roots)` of the strategy objects used
 - `con` — NamedTuple of appended constraint handles (collocation, continuity, initial,
   algebraic, path, terminal)
 """
-struct DAEta{Z,ZB,Y,U,P,Theta,ZF,T,MA,MTH,CON}
+struct DAEta{T,TZ,TZB,TY,TU,TP,TTheta,TZF,Th,Tt,TM,TC}
     # variable / parameter handles
-    z::Z
-    zb::ZB
-    y::Y
-    u::U
-    p::P
-    theta::Theta
-    zf::ZF
+    z::TZ
+    zb::TZB
+    y::TY
+    u::TU
+    p::TP
+    theta::TTheta
+    zf::TZF
 
     # dimensions
     nz::Int
@@ -58,17 +82,18 @@ struct DAEta{Z,ZB,Y,U,P,Theta,ZF,T,MA,MTH,CON}
     N::Int
     K::Int
 
+    # reference-element weights (Th/Tt: Vector{T}/Matrix{T}, or ExaModels Parameter under adaptive)
+    weights::BasisWeights{T}
+    w::Vector{T}
+
     # mesh & collocation layout
     nodes::Vector{T}
-    h::Vector{T}
-    tau::Vector{T}
-    t::Matrix{T}
-    A::MA
-    b::Vector{T}
+    h::Th
+    t::Tt
 
     # convenience
-    method::MTH
-    con::CON
+    method::TM
+    con::TC
 end
 
 function Base.show(io::IO, dae::DAEta)

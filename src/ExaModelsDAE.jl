@@ -8,23 +8,25 @@ module ExaModelsDAE
 import ExaModels: 
     ExaCore, 
     ExaModels
+import FastGaussQuadrature
 
 include("structs.jl")
 include("utils.jl")
 
 for file in [
-        "roots",
+        "basis",    
         "polynomial",
-        "basis",
-        "nodes",
+        "roots",
+        "mesh",
+        "polynomial",
+        "initialization",
         "variables",
         "collocation",
-        "algebraic",
         "continuity",
         "initialcons",
-        "terminalcons",
+        "algebraic",
         "pathcons",
-        "initialization",
+        "terminalcons",
     ]
     include("dynamic/$file.jl")
 end

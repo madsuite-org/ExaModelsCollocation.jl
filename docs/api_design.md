@@ -131,10 +131,10 @@ core, dae = EMD.add_dae(
     # ---- discretization ----
     nodes      = nothing,              # element boundaries; if given, NO forward-solve mesh (integrator not loaded)
     degree     = 4,                    # collocation points per element
-    basis      = EMD.Lagrange(),       # {Lagrange(), RungeKutta()}
-    polynomial = EMD.LagrangeInterpolation(),
+    basis      = EMD.StateForm(),      # {StateForm(), DerivativeForm()}
+    polynomial = EMD.Lagrange(),       # {Lagrange()}
     roots      = EMD.GaussRadau(),     # {GaussRadau(), GaussLegendre(), GaussLobatto()}
-    warmstart  = :auto,                # :auto | :simulate | :constant | :zero  (see §4)
+    adaptive   = false,                # false: t[i,j]/τ_k/h[i] as constants; true: as ExaModels parameters (AMR)
 )
 ```
 
@@ -177,50 +177,67 @@ dimensions, warm-start, mesh — degrade independently.
 | `nc`, `nhE` | `length` of `c` / `hE` output | no (single evaluation) |
 
 Concrete `init.p/init.theta/u` carry the input-only dims (`np/ntheta/nu`) directly. `nz/ny/nc/nhE` are
-output cardinalities, read from one evaluation of each function. `z`/`y` inputs needed to
-perform that evaluation are supplied as duck-typed index-return probes (they respond to
-any index), so no size need be known in advance. **All dimensions are obtainable without
-running the integrator** — the integrator is only for meshing (§4.2).
+output cardinalities, read from one evaluation of each function. The `z`/`y` inputs needed to
+perform that evaluation are supplied as a **count-only probe** `_Probe`: a singleton scalar whose
+`getindex` returns another `_Probe`, and whose arithmetic and `Base` math ops all return `_Probe`.
+A type-generic user function fed `_Probe` for the unknown-length vectors returns a `Vector` whose
+**length is the dimension**, with no numeric evaluation, so no size need be known in advance and no
+domain error (`sqrt`, `log`, `/`) can fire. This is why user functions must be index-based and
+type-generic (§2).
+
+Extraction order, where each step makes the next argument concrete so probes are used only for
+genuinely unknown lengths:
+1. `np, ntheta, nu` from `init`/`u` (no eval).
+2. `nz = length(z0(_Probe, u, p, theta))`.
+3. `ny = length(g(_Probe, _Probe, u, p, theta, t0))`  (`0` if `g === nothing`).
+4. `nc = length(c(...))`, `nhE = length(hE(_Probe, p, theta))`  (`0` when absent).
+
+**All dimensions are obtainable without running the integrator** — the integrator is only for
+meshing (§4.2).
 
 ### 4.2 When the forward solver (OrdinaryDiffEq extension) is loaded
 
-The integrator runs in **exactly one case**: an adaptive mesh is required.
+The integrator runs in **exactly one case**: `nodes === nothing`. Providing `nodes` fixes the mesh
+and the integrator is never loaded; omitting `nodes` means the mesh comes from a forward solve, so
+a simulatable setup (a `u` profile and the extension) must be present.
 
-| `nodes` | `init` + `u` given | Behavior |
-|---------|--------------------|----------|
-| **given** | any | **Integrator NOT loaded.** Mesh = user's. Dims from §4.1. Warm-start integrator-free (§4.3). |
-| `nothing` | yes + extension loaded | Integrator runs: adaptive steps → mesh nodes; trajectory → warm-start (§4.3, "simulate"). |
-| `nothing` | no / extension absent | Fallback: mesh from `degree`+uniform over `tspan` (needs explicit `N`/spacing); starts `= 0`; dims must be explicit. |
+| `nodes` | Behavior |
+|---------|----------|
+| **given** | **Integrator NOT loaded.** Mesh = user's (`N = length(nodes) - 1`). Dims from §4.1. Warm-start integrator-free (§4.3). |
+| `nothing` | Integrator runs: adaptive steps → mesh nodes; trajectory → `:simulate` warm-start (§4.3). Requires `u` profile + extension. |
 
 This satisfies the requirement: **providing `nodes` guarantees OrdinaryDiffEq is never
 loaded.** The forward-solve mesh+warmstart lives in a package extension
-(`…OrdinaryDiffEqExt`); the core `add_dae` path is dependency-free.
+(`…OrdinaryDiffEqExt`); the core `add_dae` path is dependency-free. There is no uniform-`N`
+fallback: with no `nodes` the mesh is defined by the simulation, so no explicit element count is
+ever required.
 
-### 4.3 Warm-start strategies (`warmstart`)
+### 4.3 Initialization (inferred, no flag)
 
-Applied after the mesh is fixed. All but `:simulate` are integrator-free.
+There is no warm-start kwarg. `add_dae` seeds the collocation starts from what the user already
+provided, applied after the mesh is fixed. The baseline start of every block is its `init.X`
+(scalar broadcast, per-component vector, or callable sampled at `t[i,j]`), defaulting to the
+ExaModels `0` start where no `init.X` is given. The differential/algebraic state starts are then
+refined by the best information available:
 
-- **`:simulate`** — sample the forward-solve trajectory at the collocation times `t[i,k]`
-  for `z_start`, `y_start`; `zb` from junction times; `u_start` from `u(t[i,k])`. Only
-  available when the integrator has run (§4.2, row 2).
-- **`:constant`** (integrator-free) — compute the *consistent* initial state at `t₀`
-  (`zb₀ = z0(y₀,u(t₀),init.p,init.theta)`, with `y₀` from a small internal Newton solve of
-  `g(zb₀,y₀,…)=0` when `ny>0`), then propagate it as a flat guess: every `z_{i,k}=zb₀`,
-  `y_{i,k}=y₀`, `u_{i,k}=u(t[i,k])`. This is the answer to "how do we seed states when the
-  user provides the mesh": a consistent IC + constant hold, no integrator. An optional
-  lightweight internal explicit stepper on the given mesh can upgrade this guess while
-  staying dependency-free.
-- **`:zero`** (integrator-free) — ExaModels default: all starts `= 0`.
-- **`:auto`** — `:simulate` if the integrator ran; else `:constant` if `init.p/init.theta` and
-  a `u` profile are present; else `:zero`.
+1. **Simulate** — if the integrator ran (`nodes === nothing`), sample its trajectory at the
+   collocation times `t[i,k]` for `z`/`y` starts, junction times for `zb`, and `u(t[i,k])` for `u`.
+2. **Consistent IC + hold** (integrator-free) — else if a `u` profile and `init.p/init.theta` are
+   present, compute the consistent initial state at `t₀` (`zb₀ = z0(y₀, u(t₀), init.p, init.theta)`,
+   with `y₀` from a small internal Newton solve of `g(zb₀, y₀, …) = 0` when `ny > 0`) and hold it
+   flat: every `z_{i,k} = zb₀`, `y_{i,k} = y₀`, `u_{i,k} = u(t[i,k])`.
+3. **`init` / zero** (integrator-free) — else the baseline `init.X` starts stand (or `0`).
+
+Each tier degrades independently to the next when its inputs are absent, so the user controls
+initialization purely by what they pass (`nodes`, `u`, `init`), not by a mode flag. Precedence
+between an explicit `init.X` and an auto-seed for the same block is a later detail.
 
 ### 4.4 Fallback contract
 
 Because `init` is required, `np`/`ntheta` (and `nu` via `init.u`) are always available, and
-`nz/ny/nc/nhE` come from function outputs — so dimensions never need explicit kwargs. When
-no `u` profile is given (can't simulate), the only extra requirement is a mesh: pass
-`nodes` (or rely on `degree` + uniform over `tspan`). Starts then follow `:constant` if a
-consistent IC can be formed, else `:zero`.
+`nz/ny/nc/nhE` come from function outputs, so dimensions never need explicit kwargs. The mesh has
+exactly two sources: the user's `nodes`, or a forward solve when `nodes === nothing`. Starts follow
+the §4.3 ladder: simulate if the integrator ran, else consistent-IC hold, else `init`/zero.
 
 ## 5. Returned metadata (`dae`)
 
@@ -270,18 +287,61 @@ core, dae = EMD.add_dae(core, f, z0; hE=hE, degree=3, roots=EMD.GaussRadau(),
 @add_obj(core, dae.h[i] * w[j] * L(dae.z[k,i,j], dae.u[l,i,j]) for ...)
 ```
 
-## 6. Internal module mapping
+## 6. Internal module mapping and extraction pipeline
 
-- `roots.jl` — `GaussRadau/Legendre/Lobatto` → roots `τ`, quadrature weights.
-- `polynomial.jl` — `LagrangeInterpolation` → basis `ℓ_k`, values `ℓ_k(1)`.
-- `basis.jl` — `Lagrange` → differentiation matrix `D`; `RungeKutta` → Butcher `(a,b)`.
-  Both emit the C1 collocation-constraint generator.
-- `nodes.jl` — uniform mesh generation when `nodes === nothing` and no simulation.
-- `initialize.jl` — dimension probing, consistent-IC / constant warm-start, block
-  allocation with bounds/starts, assembly of C1–C6.
+The strategy inputs `roots`, `polynomial`, `basis` are **singleton tag structs with no fields**.
+They carry no data; all information is produced by helpers dispatching on their type. The extraction
+is a chain on the reference element `[0,1]`, depending only on `degree = K`, so it is computed
+**once** and reused across all `N` elements (and all conditions). Only `h[i]` and `t[i,j]` are
+per-element.
+
+```
+roots, K    ──_get_roots(roots, K)───►  τ = [0, τ₁..τ_K], quadrature weights w
+{0}∪τ       ──polynomial (Lagrange)──►  Lagrange basis ℓ_k over the K+1 node set
+poly, basis ──_get_weights(basis, …)─►  (A, b)
+```
+
+**Node convention.** `τ₀ = 0` is universal across every family, so the node set is always
+`{τ₀ = 0, τ₁..τ_K}` (`K+1` points) with identical structure. `τ₀` is the anchor tied to `zb_{i-1}`;
+the ODE collocation residual is enforced at `τ₁..τ_K` (the `K` roots), giving C1's `nz·N·K` rows.
+The families differ only in where `τ₁..τ_K` sit: Radau `τ_K = 1`; Legendre `τ₁..τ_K` interior to
+`(0,1)`; Lobatto `τ_K = 1` as well (its left endpoint coincides with `τ₀`, not double-counted).
+
+Helper contracts:
+- `roots.jl` — `_get_roots(r::AbstractRoots, K)` dispatches on `GaussRadau/GaussLegendre/GaussLobatto`
+  and returns `(τ = [0, τ₁..τ_K], w)`: the collocation points (roots of the shifted Gauss-Jacobi
+  polynomial) with `0` prepended, and the `K` quadrature weights over `τ₁..τ_K` for user-side
+  integral objective terms.
+- `polynomial.jl` — `Lagrange` builds the interpolating-basis machinery over `{0, τ₁..τ_K}` and
+  exposes `ℓ_k(1)` (endpoint value), `dℓ_k/dτ(τ_j)` (derivative at the collocation points), and
+  `ω_k(τ)` (integrated basis) with `ω_k(τ_j)`, `ω_k(1)`.
+- `basis.jl` — `_get_weights(basis, polynomial, τ)` dispatches on `basis` to select which
+  combination becomes `(A, b)`; `_create_collocation` dispatches on `basis` for the C1 form:
+
+  | `basis` | node set | `A` | `b` | C1 form |
+  |---------|----------|-----|-----|---------|
+  | `StateForm` | `{0, τ₁..τ_K}` (`K+1`) | diff. matrix `[dℓ_k/dτ(τ_j)]` | `[ℓ_k(1)]` | `Σ_k z_{i,k} ℓ̇_k(τ_j) = h_i f(…)` (Eq. 10.19b) |
+  | `DerivativeForm` | `{τ₁..τ_K}` (`K`) | Butcher `[ω_k(τ_j)]` | `[ω_k(1)]` | `z_{i,j} = zb_{i-1} + h_i Σ_k a_{jk} f(…)` |
+
+  `StateForm` anchors the polynomial at `0` (the boundary state); `DerivativeForm` represents the
+  derivative over just the collocation points. Same math from both directions, which is why they
+  share `roots`.
+- `nodes.jl` — `_create_mesh(nodes, tspan, τ)` returns `(nodes, h, t)`. Two paths: user `nodes`
+  (`N = length(nodes) - 1`, boundaries as given), or `nodes === nothing` routing to the
+  OrdinaryDiffEq extension whose adaptive steps become the boundaries. `h[i] = nodes[i+1] - nodes[i]`,
+  `t[i,j] = nodes[i] + h[i]·τ_j`.
+- `initialization.jl` — dimension probing (§4.1), consistent-IC / constant warm-start, block
+  allocation with bounds/starts, assembly of C1–C6 into `DAEta`.
 - `structs.jl` — `DAEta` + strategy type definitions.
-- **`ext/…OrdinaryDiffEqExt.jl`** — forward-solve mesh + `:simulate` warm-start; loaded
-  only when OrdinaryDiffEq is available and a mesh must be generated.
+- **`ext/…OrdinaryDiffEqExt.jl`** — forward-solve mesh + `:simulate` warm-start; loaded only when
+  OrdinaryDiffEq is available and `nodes === nothing`.
+
+`_get_roots`, `_get_weights`, and the reference-element part of `_create_mesh` assemble one
+resolved-spec object (dims, presence flags, reference `τ/w/A/b`, per-element `nodes/h/t`, resolved
+init/bounds, `method = (basis, polynomial, roots)`) that flows into every `_create_*` generator and
+largely populates `DAEta`. Under `adaptive = true` the reference/mesh arrays are realized as
+ExaModels parameters (mutable for refinement); under `adaptive = false` they stay constants. This is
+the immutable-weights vs AMR-mutable split noted in `structs.jl`.
 
 ## 7. What "complete" requires (checklist)
 
@@ -293,9 +353,9 @@ core, dae = EMD.add_dae(core, f, z0; hE=hE, degree=3, roots=EMD.GaussRadau(),
 - [ ] General initial-condition constraint `z0(y,u,p,theta)` (C3).
 - [ ] Terminal constraint `hE(zf, p, theta)` (C6, Eq. 10.19h).
 - [ ] `basis` dispatch producing C1 in Lagrange *or* Runge–Kutta form from shared roots.
-- [ ] Forward-solve init (dims + `:simulate` warm-start + adaptive mesh) behind an
+- [ ] Forward-solve init (dims + simulate-trajectory starts + adaptive mesh) behind an
       OrdinaryDiffEq extension; **never loaded when `nodes` is provided**.
-- [ ] Integrator-free `:constant`/`:zero` warm-start paths (consistent-IC + hold).
+- [ ] Integrator-free initialization (consistent-IC hold, else `init`/zero), inferred not flagged (§4.3).
 - [ ] `dae` exposes all variable handles, mesh/collocation layout, and `zf`.
 - [ ] Solution recovery helper: `dae` → trajectories `z(t), y(t), u(t)`.
 
@@ -319,3 +379,10 @@ Resolved:
 - `u`'s role — providing the `u` profile fixes the control; omitting makes it a decision
   variable (guess via `init.u`).
 - `z0` and `hE` take **no `t`** — they are by definition the `t₀` and `t_f` points.
+- **Mesh sources.** Exactly two: user `nodes`, or a forward solve when `nodes === nothing`. No
+  uniform-`N` fallback, so no explicit element count is ever required (§4.2).
+- **Collocation node convention.** `τ₀ = 0` is universal across Radau/Legendre/Lobatto; the node
+  set is always `{0, τ₁..τ_K}` and the ODE is enforced at `τ₁..τ_K`. Lobatto's left endpoint
+  coincides with `τ₀` (not double-counted) (§6).
+- **Dimension probing.** `nz/ny/nc/nhE` from one evaluation per function using the count-only
+  `_Probe`; no integrator, no domain errors (§4.1).

@@ -59,7 +59,7 @@ core, dae = EMD.add_dae(core, f, z0, tspan, init;
   g          = g,                # Algebraic equality constraints, g(x) = 0
   c          = c,                # Path constraints, c(x) ≤ 0
   hE         = hE,               # Terminal constraints, hE(zf) = 0
-  ufixed     = u,                # Fixed control profile, u(t) (defaults to a decision variable if omitted)
+  u          = u,                # Fixed control profile, u(t) (defaults to a decision variable if omitted)
   bounds     = (z = ...,         # Variable bounds/simple path constraints
                 y = ..., 
                 u = ...,
