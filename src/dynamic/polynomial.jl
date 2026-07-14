@@ -1,3 +1,4 @@
+# TODO verify implementations below
 # Interpolating polynomial used to represent the differential state
 # across each interval, evaluated at the collocation points.
 # default = ExaModelsDAE.Lagrange()
@@ -21,6 +22,7 @@ Lagrange interpolation polynomials.
 """
 struct Lagrange <: AbstractPolynomial end
 
+# TODO verify implementations below
 """
     delljk(taus) -> Matrix
 

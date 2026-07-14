@@ -21,10 +21,10 @@ for file in [
         "variables",
         "collocation",
         "continuity",
-        "initialcons",
+        "initial",
         "algebraic",
-        "pathcons",
-        "terminalcons",
+        "path",
+        "terminal",
     ]
     include("dynamic/$file.jl")
 end

@@ -38,22 +38,22 @@ Contains the collocation and continuity weights
 - `b`: continuity constraint weights b[j], j=0,...,K. jth basis polynomial evaluated at tau=1
 """
 struct BasisWeights{T}
-    A::Matrix{T}
-    b::Vector{T}
+    A::AbstractMatrix{T}
+    b::AbstractVector{T}
 end
 
-function _get_weights(basis::AbstractBasis, polynomial::AbstractPolynomial, taus::AbstractVector{T}) where {T <: Real}
+function _get_weights(polynomial::AbstractPolynomial, basis::AbstractBasis, taus::AbstractVector{T}) where {T <: Real}
     # Get derivative interpolation weights A[i,j]
-    A = _get_weights_A(basis, polynomial, taus)
+    A = _get_weights_A(polynomial, basis, taus)
     
     # Get continuity weights b[j]
-    b = _get_weights_b(basis, polynomial, taus)
+    b = _get_weights_b(polynomial, basis, taus)
     
     return BasisWeights(A, b)
 end
 
-_get_weights_A(::StateForm, ::Lagrange, taus) = delljk(taus)
-_get_weights_b(::StateForm, ::Lagrange, taus) = ell1j(taus)
+_get_weights_A(::Lagrange, ::StateForm, taus) = delljk(taus)
+_get_weights_b(::Lagrange, ::StateForm, taus) = ell1j(taus)
 
-_get_weights_A(::DerivativeForm, ::Lagrange, taus) = Omegajk(taus)
-_get_weights_b(::DerivativeForm, ::Lagrange, taus) = Omega1j(taus)
+_get_weights_A(::Lagrange, ::DerivativeForm, taus) = Omegajk(taus)
+_get_weights_b(::Lagrange, ::DerivativeForm, taus) = Omega1j(taus)

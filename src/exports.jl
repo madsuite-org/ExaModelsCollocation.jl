@@ -15,7 +15,7 @@ inputs:
 
 kwargs:
 - `g`, `c`, `hE`: algebraic, path, and terminal constraints
-- `u`: fixed control profile `u(t)`; given fixes the control, omitted makes it a decision variable
+- `u`: fixed control profile `u(t)`
 - `bounds`: variable bounds
 - `nodes`: vector of interval boundary points
 - `degree`: number of interpolating points per interval (degree of interpolating polynomial)
@@ -44,59 +44,61 @@ function add_dae(
         roots::AbstractRoots = ExaModelsDAE.GaussRadau(),
         adaptive::Bool = false
     )
-    # Warnings for unsupported features
+    # ---------- Errors for unsupported features ----------
     # polynomial.jl
     polynomial isa ExaModelsDAE.Lagrange || error("Only Lagrange interpolation polynomials are supported currently.")
 
-    # taus.jl: obtain K+1 interpolation points, taus = {tau0 = 0, ..., tauK}
+    # ---------- Create DAEta things ----------
+    # DAEta field 1. meta: NamedTuple of user inputs
+    meta = (; tspan, init, bounds, nodes, polynomial, basis, roots)
+    
+    # DAEta field 2. callbacks: DAECallbacks of user problem funxtions
+    callbacks = DAECallbacks(f, z0, g, c, hE, u)
+
+    # taus.jl: K+1 interpolation points, taus = {tau0 = 0, ..., tauK}
     taus = _get_taus(roots, degree)
 
-    # basis.jl: get collocation and continuity weights A (ajk), b (bj) as constants
-    weights = _get_weights(basis, polynomial, taus)
+    # DAEta field 3. weights: BasisWeights based on polynomial and basis
+    # basis.jl: collocation and continuity weights A (ajk), b (bj)
+    weights = _get_weights(polynomial, basis, taus)
 
-    # initialize.jl: OrdinaryDiffEq.jl to adpatively foward solve for mesh
-    # ...
+    # initialize.jl: OrdinaryDiffEq.jl forward solve for the mesh
+    init_full = _get_init_full(meta, callbacks, taus)
 
-    # mesh.jl: create tij, hi info (for future AMR support)
-    core, mesh = _create_mesh(core, tspan, init, nodes, taus)
+    # DAEta field 4. mesh: CollocationMesh
+    # mesh.jl: tij, hi info
+    mesh = _get_mesh(meta, callbacks, taus, init_full, adaptive)
 
-    # ...
-    dae = DAEta(f, z0, g, c, hE, u, taus, mesh)
-    # DAEta
-        # Callback Functions
-            # f, z0, g, c, hE, u
-        # Constants
-            # taus, weights
-        # Dimensions
-            # N, K, Nz, Np, ...
-        # Variable/parameter handles
-            # ...
-    
+    # DAEta field 5. dims: DAEDims
+    dims = _get_dims(meta, mesh)
+
+    # DAEta initialize
+    dae = DAEta(meta, callbacks, weights, mesh, dims, (;), (;))
+
+    # ---------- Create ExaModels things ----------
     # parameters.jl: theta[:] as ExaModels parameters (+ t[i,j], h[i] for future AMR support)
-    # tij, hi are constants left as constants if adaptive = false
-    core = _create_parameters(core)
+    core, dae = _create_parameters(core, dae)
 
-    # variables.jl: z[v,i,k,c], y[v,i,k,c], u[v,i,k,c], p[:], (c=[Nc] for future multi-condition support)
-    core, vars = _create_variables(core)
+    # variables.jl: z[v,i,k,c], y[v,i,k,c], u[v,i,k,c], p[:] (c=[Nc] for future multi-condition support)
+    core, dae = _create_variables(core, dae)
 
     # collocation.jl: main collocation equations
-    core = _create_collocation(core)
+    core, dae = _create_collocation(core, dae)
 
     # continuity.jl: cross-interval continuity
-    core = _create_continuity(core)
+    core, dae = _create_continuity(core, dae)
 
-    # initialcons.jl: z(t0) = z0(y,u,p,theta)
-    core = _create_initialcons(core)
+    # TODO initial.jl: z(t0) = z0(y,u,p,theta)
+    core, dae = _create_initial(core, dae)
 
     # TODO algebraic.jl: g(z,y,u,p,theta,t) = 0
-    core = _create_algebraic(core)
+    core, dae = _create_algebraic(core, dae)
 
-    # TODO pathcons.jl: c(z,y,u,p,theta,t) \le 0
-    core = _create_pathcons(core)
+    # TODO path.jl: c(z,y,u,p,theta,t) <= 0
+    core, dae = _create_path(core, dae)
 
-    # TODO terminalcons.jl: hE(z,y,u,p,theta) = 0
-    core = _create_termincalcons(core)
+    # TODO terminal.jl: hE(z,y,u,p,theta) = 0
+    core, dae = _create_terminal(core, dae)
 
-    # Return ExaCore and DAEta
     return core, dae
 end

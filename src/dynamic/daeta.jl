@@ -1,83 +1,146 @@
-# Main DAEta struct
-# TODO distinguish definite immutable values vs mutables
-"""
-    DAEta
+# Discretization metadata returned by add_dae
+# nothing => empty
 
-Discretization metadata returned by [`add_dae`](@ref) (bound as `dae`). Carries the
-ExaModels variable/parameter handles, the problem dimensions, the mesh and collocation
-layout, and the handles of the appended structural constraints. `add_dae` transcribes the
-DAE onto the `ExaCore`; the objective and any extra constraints are written separately by
-the user against this object.
+"""
+    DAECallbacks{Tf,Tz0,Tg,Tc,ThE,Tu}
+
+The user problem functions for transcription.
 
 # Fields
-
-Variable / parameter handles (`nothing` when the corresponding class is absent):
-- `z`  — differential collocation states `z_{i,j}`
-- `zb` — element-boundary states `zb_i` (`i = 0..N`); `zb[end] == zf`
-- `y`  — algebraic collocation states `y_{i,j}`
-- `u`  — controls `u_{i,j}`
-- `p`  — decision parameters (ExaModels `Variable`)
-- `theta` — mutable parameters (ExaModels `Parameter`)
-- `zf` — terminal boundary state `zb_N`
-
-Dimensions: `nz`, `ny`, `nu`, `np`, `ntheta`; `N` finite elements; `K` collocation points
-per element (`= degree`).
-
-Mesh & collocation layout:
-- `weights` — reference-element [`BasisWeights`](@ref) (`A`, `b`, `tau`)
-- `w`  — quadrature weights over the collocation roots (length `K`)
-- `nodes` — element boundaries `τ̂₀..τ̂_N` (length `N+1`)
-- `h`  — element lengths `hᵢ` (length `N`)
-- `t`  — collocation times `t_{i,j}` (`N × K`)
-
-Convenience:
-- `method` — NamedTuple `(basis, polynomial, roots)` of the strategy objects used
-- `con` — NamedTuple of appended constraint handles (collocation, continuity, initial,
-  algebraic, path, terminal)
+- `f`  : dynamics `dz/dt = f(z,y,u,p,theta,t)`
+- `z0` : initial condition `z0(y,u,p,theta)`
+- `g`  : algebraic constraint `g(z,y,u,p,theta,t) = 0`
+- `c`  : path constraint `c(z,y,u,p,theta,t) <= 0`
+- `hE` : terminal constraint `hE(z,y,u,p,theta) = 0`
+- `u`  : fixed control profile `u(t)`. `nothing` when `u` is a decision variable, in which
+  case the handle lives in the variable/parameter handles instead
 """
-struct DAEta{T,TZ,TZB,TY,TU,TP,TTheta,TZF,Th,Tt,TM,TC}
-    # variable / parameter handles
-    z::TZ
-    zb::TZB
-    y::TY
-    u::TU
-    p::TP
-    theta::TTheta
-    zf::TZF
+struct DAECallbacks{Tf,Tz0,Tg,Tc,ThE,Tu}
+    f::Tf
+    z0::Tz0
+    g::Tg
+    c::Tc
+    hE::ThE
+    u::Tu
+end
 
-    # dimensions
+"""
+    DAEDims
+
+Problem dimensions of the discretized DAE system.
+
+# Fields
+- `N`  : number of intervals
+- `K`  : degree of interpolating polynomial (K+1 interpolation points per interval)
+- `nz` : differential state variables
+- `ny` : algebraic state variables
+- `nu` : control variables
+- `np` : free decision parameters
+- `ntheta` : mutable fixed parameters
+"""
+struct DAEDims
+    N::Int
+    K::Int
     nz::Int
     ny::Int
     nu::Int
     np::Int
     ntheta::Int
-    N::Int
-    K::Int
-
-    # reference-element weights (Th/Tt: Vector{T}/Matrix{T}, or ExaModels Parameter under adaptive)
-    weights::BasisWeights{T}
-    w::Vector{T}
-
-    # mesh & collocation layout
-    nodes::Vector{T}
-    h::Th
-    t::Tt
-
-    # convenience
-    method::TM
-    con::TC
 end
 
+"""
+    DAEta
+
+DAE metadata returned by [`add_dae`](@ref).
+The user can write constraints and objectives separately from this struct.
+
+# Fields
+- `meta`      : NamedTuple of user inputs
+                `tspan`,
+                `init`,
+                `bounds`,
+                `nodes`,
+                `polynomial`,
+                `basis`,
+                `roots`
+- `callbacks` : [`DAECallbacks`](@ref) of the user problem functions `f, z0, g, c, hE, u`
+- `weights`   : [`BasisWeights`](@ref) `A`, `b`
+- `mesh`      : [`CollocationMesh`](@ref): `taus`, `t[i,j]`, `h[i]`, `isadaptive`
+- `dims`      : [`DAEDims`](@ref) problem dimensions
+- `vars`      : NamedTuple of ExaModels variable/parameter handles:
+                `z` differential collocation states,
+                `y` algebraic collocation states,
+                `u` controls,
+                `p` free decision parameters,
+                `theta` mutable fixed parameters,
+                `zf` terminal states
+- `cons`      : NamedTuple of constraint handles:
+                `collocation`,
+                `continuity`,
+                `initial`,
+                `algebraic`,
+                `path`,
+                `terminal`
+"""
+struct DAEta{MT,CB<:DAECallbacks,T,MESH,V,C}
+    meta::MT
+    callbacks::CB
+    weights::BasisWeights{T}
+    mesh::MESH
+    dims::DAEDims
+    vars::V
+    cons::C
+end
+# NOTE: `u` is an examodels parameter if fixed, examodels variable if decision variable
+# NOTE: zf automatically routes to z[endpoint] without actually creating a zf variable (for Radau and Lobatto roots)
+
+function DAEta(dae::DAEta; kwargs...)
+    kw = NamedTuple(kwargs)
+    DAEta((get(kw, name, getfield(dae, name)) for name in fieldnames(DAEta))...)
+end
+
+# TODO rewrite
+# Alias handle for the terminal state when the endpoint is a collocation node
+# (Radau, Lobatto). Forwards index access to the final node z[v, N, K, c] so that
+# vars.zf exposes the same zf[v] / zf[v, c] interface as the dedicated GaussLegendre
+# variable, and callers need not branch on roots.
+struct TerminalState{Z}
+    z::Z
+    N::Int
+    K::Int
+end
+Base.getindex(zf::TerminalState, v, c = 1) = zf.z[v, zf.N, zf.K, c]
+
 function Base.show(io::IO, dae::DAEta)
+    d = dae.dims
+    m = dae.meta
     print(
         io,
         """
         DAEta
 
-          states     nz = $(dae.nz),  ny = $(dae.ny),  controls nu = $(dae.nu)
-          parameters np = $(dae.np),  ntheta = $(dae.ntheta)
-          mesh       N  = $(dae.N) elements × K = $(dae.K) collocation points
-          method     $(dae.method.basis), $(dae.method.polynomial), $(dae.method.roots)
+          states     nz = $(d.nz),  ny = $(d.ny),  controls nu = $(d.nu)
+          parameters np = $(d.np),  ntheta = $(d.ntheta)
+          mesh       N = $(d.N) intervals, K = $(d.K) degree
+          horizon    tspan = $(m.tspan)
+          method     $(m.basis), $(m.polynomial), $(m.roots)
         """,
     )
 end
+
+function Base.getproperty(dae::DAEta, name::Symbol)
+    if hasfield(DAEta, name)
+        getfield(dae, name)
+    elseif hasfield(typeof(getfield(dae, :vars)), name)
+        getfield(getfield(dae, :vars), name)
+    elseif hasfield(typeof(getfield(dae, :dims)), name)
+        getfield(getfield(dae, :dims), name)
+    else
+        getfield(dae, name)
+    end
+end
+
+# Surface the forwarded handle/dimension names to tab-completion and introspection.
+Base.propertynames(dae::DAEta) = (
+    fieldnames(DAEta)..., propertynames(getfield(dae, :vars))..., fieldnames(DAEDims)...
+)
