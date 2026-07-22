@@ -1,19 +1,16 @@
-# Discretization metadata returned by add_dae
-# nothing => empty
-
+# Discretization metadata
 """
     DAECallbacks{Tf,Tz0,Tg,Tc,ThE,Tu}
 
 The user problem functions for transcription.
 
 # Fields
-- `f`  : dynamics `dz/dt = f(z,y,u,p,theta,t)`
+- `f`  : right-hand side function `dz/dt = f(z,y,u,p,theta,t)`
 - `z0` : initial condition `z0(y,u,p,theta)`
 - `g`  : algebraic constraint `g(z,y,u,p,theta,t) = 0`
-- `c`  : path constraint `c(z,y,u,p,theta,t) <= 0`
-- `hE` : terminal constraint `hE(z,y,u,p,theta) = 0`
-- `u`  : fixed control profile `u(t)`. `nothing` when `u` is a decision variable, in which
-  case the handle lives in the variable/parameter handles instead
+- `c`  : bounds/path inequality `c(z,y,u,p,theta,t) <= 0`
+- `hE` : terminal equality `hE(z,y,u,p,theta) = 0`
+- `u`  : fixed control profile `u(t)`
 """
 struct DAECallbacks{Tf,Tz0,Tg,Tc,ThE,Tu}
     f::Tf
@@ -52,7 +49,7 @@ end
     DAEta
 
 DAE metadata returned by [`add_dae`](@ref).
-The user can write constraints and objectives separately from this struct.
+The user can write constraints and objectives separately using DAEta.
 
 # Fields
 - `meta`      : NamedTuple of user inputs

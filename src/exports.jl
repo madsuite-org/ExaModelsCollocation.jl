@@ -63,9 +63,9 @@ function add_dae(
 
     # DAEta field 4. mesh: CollocationMesh
     # initialize.jl: OrdinaryDiffEq.jl forward solve for the mesh
-    init_full = _get_init_full(meta, callbacks)
+    init_full = _get_init_full(meta, callbacks, weights)
     # mesh.jl: tij, hi info
-    mesh = _get_mesh(meta, callbacks, init_full)
+    mesh = _get_mesh(meta, init_full)
 
     # DAEta field 5. dims: DAEDims
     dims = _get_dims(meta, mesh)
