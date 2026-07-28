@@ -31,11 +31,10 @@ Collocation metadata used by the collocation helper functions.
 
 ---
 
-## `add_var_collocation`, `@add_var_collocation`
+## `add_var_collocation`
 
 ```julia
 add_var_collocation(core, dae, dims...; include_boundary = true, name = nothing, kwargs...)
-@add_var_collocation(core, dae, name, dims...; kwargs...)
 ```
 
 Adds a variable block laid out over the collocation mesh of `dae`. `dims` is the shape at a
@@ -49,20 +48,23 @@ are appended. Returns `(core, var)`, `dae` is mutated in place.
 ### Example
 ```julia
 julia> c, z = add_var_collocation(c, dae, 1:3, 1:2);   # z[v,c,i,k], 3 × 2 × N × (K+1)
-
-julia> @add_var_collocation(c, dae, u, 1:1, 1:2; include_boundary = false);   # k = 1,…,K
 ```
 
 ---
 
-## `block`
+## `@add_var_collocation`
 
 ```julia
-block(dae, var) -> VarBlock
+@add_var_collocation(core, dae, name, dims...; kwargs...)
 ```
 
-The layout recorded for a handle: its declared `dims` and its `krange`. Looked up by handle
-identity, so it works whether or not the block was named.
+Macro form of `add_var_collocation`, relating to it as `ExaModels.@add_var` does to
+`add_var`: `name` is written bare and bound in the calling scope along with `core`.
+
+### Example
+```julia
+julia> @add_var_collocation(c, dae, u, 1:1, 1:2; include_boundary = false);   # k = 1,…,K
+```
 
 ---
 
@@ -125,10 +127,28 @@ julia> @add_con_collocation(c, dae, coll, z[v,c],   # one call, every v
 
 ---
 
-## `continuity_itr`, `@add_con_continuity`
+## `continuity_itr`
 
 ```julia
 continuity_itr(dae, leads...)
+```
+
+Builds an iterator for a `StateForm` `@add_con_continuity` over the state slots to tie. The
+junction index `i = 1,…,N-1` is appended by the macro, not carried here.
+
+### Arguments
+- `leads` : variable dimensions that vary across the constraint
+
+### Example
+```julia
+julia> itr = continuity_itr(dae, 1:Nz, 1:Nc);    # (v, c)
+```
+
+---
+
+## `@add_con_continuity`
+
+```julia
 @add_con_continuity(core, dae, name, z[leads...] for (leads...) in itr; kwargs...)
 @add_con_continuity(core, dae, name, z[leads...], generator; kwargs...)
 ```
@@ -141,9 +161,15 @@ Ties each interval's terminal polynomial value to the next interval's boundary n
 | `StateForm` | `Σⱼ₌₀..ᴷ b[j] z[…,i,j] = z[…,i+1,0]` | slice only, over a `continuity_itr` |
 | `DerivativeForm` | `z[…,i+1,0] − z[…,i,0] = h[i] Σⱼ₌₁..ᴷ b[j] f_ij` | slice and generator, over a `collocation_itr` |
 
-`StateForm` needs no `f`, so one call covers every slot and `continuity_itr` yields
-`(leads...)` alone — the junction index is appended by the macro. `DerivativeForm` contains
-`f`, so it takes the same slice and generator as its `@add_con_collocation` call.
+`StateForm` needs no `f`, so one call covers every slot. `DerivativeForm` contains `f`, so it
+takes the same slice and generator as its `@add_con_collocation` call.
+
+### Arguments
+- `z[leads...]` : the collocated variable, as in `@add_con_collocation`
+- `generator` : `DerivativeForm` only — `f` over a `collocation_itr`
+
+### Keyword Arguments
+- passed on to `ExaModels.add_con`
 
 ### Example
 ```julia
@@ -154,3 +180,13 @@ julia> @add_con_continuity(c, dae, cont1, z[1,c],                   # Derivative
            z[2,c,i,k] for (c,i,k,t) in collocation_itr(dae, 1:Nc));
 ```
 
+---
+
+## `block`
+
+```julia
+block(dae, var) -> VarBlock
+```
+
+The layout recorded for a handle: its declared `dims` and its `krange`. Looked up by handle
+identity, so it works whether or not the block was named.
