@@ -1,1 +1,0 @@
-# Terminal condition constraints, hE
