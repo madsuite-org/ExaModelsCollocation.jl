@@ -46,9 +46,9 @@ function solve_decay(basis, roots, N, K; Nz = 2)
     @add_con_collocation(core, dae, coll, z[v], -z[v, i, k] for (v, i, k, t) in itr)
 
     # StateForm continuity is fixed by the mode; DerivativeForm integrates the right-hand
-    # side across the element, so it takes the same slice and generator.
+    # side across the interval, so it takes the same slice and generator.
     if basis isa StateForm
-        @add_con_continuity(core, dae, cont, z[v] for (v, i) in continuity_itr(dae, 1:Nz))
+        @add_con_continuity(core, dae, cont, z[v] for v in continuity_itr(dae, 1:Nz))
     else
         @add_con_continuity(core, dae, cont, z[v], -z[v, i, k] for (v, i, k, t) in itr)
     end
@@ -116,5 +116,21 @@ end
 
     # DerivativeForm continuity integrates f, so it needs one
     @test_throws ArgumentError @add_con_continuity(dcore, ddae, bad2,
-        y[v] for (v, i) in continuity_itr(ddae, 1:1))
+        y[v] for v in continuity_itr(ddae, 1:1))
+end
+
+@testset "StateForm continuity crosses the junctions itself" begin
+    # The caller names only the slots to tie; i = 1,...,N-1 is the mode's business, so
+    # continuity_itr carries no junction index and the generator body is just the slice.
+    N, K, Nz, Nc = 5, 3, 2, 3
+    dae = DAEta(range(0.0, 1.0; length = N + 1), K)
+    core = ExaModels.ExaCore(; concrete = Val(true))
+    @add_var_collocation(core, dae, z, 1:Nz, 1:Nc)
+
+    @test continuity_itr(dae, 1:Nz, 1:Nc) == vec([(v, c) for v in 1:Nz, c in 1:Nc])
+    @test length(continuity_itr(dae, 1:Nz, 1:Nc)) == Nz * Nc      # not scaled by N - 1
+
+    @add_con_continuity(core, dae, cont, z[v, c] for (v, c) in continuity_itr(dae, 1:Nz, 1:Nc))
+    @test core.ncon == Nz * Nc * (N - 1)                          # one row per slot per junction
+    @test :cont in propertynames(dae)
 end

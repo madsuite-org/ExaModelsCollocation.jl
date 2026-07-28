@@ -1,5 +1,5 @@
-# Step 3 of the discretization: place the reference element along physical time.
-# Given the N+1 element boundaries and the K collocation points taus, the mesh holds
+# Step 3 of the discretization: place the reference interval along physical time.
+# Given the N+1 interval boundaries and the K collocation points taus, the mesh holds
 # t[i,j] = nodes[i] + h[i]*tau_j, the time each collocation point falls on.
 """
     CollocationMesh{TB,TH,TT}
@@ -7,8 +7,8 @@
 Physical mesh geometry of the discretized horizon.
 
 # Fields
-- `nodes` : element boundaries `nodes[i]`, i=1,...,N+1
-- `h`     : element lengths `h[i] = nodes[i+1] - nodes[i]`, i=1,...,N
+- `nodes` : interval boundaries `nodes[i]`, i=1,...,N+1
+- `h`     : interval lengths `h[i] = nodes[i+1] - nodes[i]`, i=1,...,N
 - `t`     : collocation times `t[i,j] = nodes[i] + h[i]*tau_j`, size N x K
 """
 struct CollocationMesh{TB,TH,TT}
@@ -19,7 +19,7 @@ end
 
 # Parse resolved boundaries and reference points into a CollocationMesh
 function _get_mesh(nodes::AbstractVector, taus::AbstractVector)
-    # Element lengths h[i]
+    # Interval lengths h[i]
     h = diff(nodes)
     N = length(h)
 

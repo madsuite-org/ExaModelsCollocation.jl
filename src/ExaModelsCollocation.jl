@@ -29,7 +29,7 @@ include("add_con_collocation.jl")
 include("add_con_continuity.jl")
 
 
-export DAEta, set_mesh!, block
+export DAEta, block
 export add_var_collocation, @add_var_collocation
 export @add_con_collocation, @add_con_continuity
 export collocation_itr, continuity_itr

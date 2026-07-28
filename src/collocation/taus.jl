@@ -1,4 +1,4 @@
-# Step 1 of the mode: where inside a reference element [0,1] the equations are enforced.
+# Step 1 of the mode: where inside a reference interval [0,1] the equations are enforced.
 # The collocation points are roots of Gauss-Jacobi polynomials
 # (L. T. Biegler, Nonlinear Programming, Theorem 10.1):
 #   GaussRadau()    : alpha = 1, beta = 0   (default; includes tau = 1)
@@ -17,7 +17,7 @@ abstract type AbstractRoots end
     GaussRadau()
 
 Roots of the Gauss-Radau polynomial as collocation points. The default `roots` for
-[`DAEta`](@ref); `tau_K = 1`, so the last collocation point sits on the element's right edge.
+[`DAEta`](@ref); `tau_K = 1`, so the last collocation point sits on the interval's right edge.
 """
 struct GaussRadau <: AbstractRoots end
 
@@ -35,7 +35,7 @@ Roots of the Gauss-Lobatto polynomial as collocation points.
 """
 struct GaussLobatto <: AbstractRoots end
 
-# K is validated in set_mesh! before this is reached
+# K is validated in _set_mesh! before this is reached
 function _get_taus(family::AbstractRoots, K::Integer)
     # Roots of the Gauss-Jacobi polynomial, from FastGaussQuadrature.jl
     roots = _get_roots(family, K) # in [-1, 1]

@@ -8,7 +8,7 @@
         @test dae.K == 3
         @test length(dae.mesh.h) == 20
         @test size(dae.mesh.t) == (20, K)
-        @test dae.mesh.t[1, end] <= dae.nodes[2]      # collocation times stay inside their element
+        @test dae.mesh.t[1, end] <= dae.nodes[2]      # collocation times stay inside their interval
         @test all(dae.mesh.h .≈ 0.25)
         @test length(dae.weights.taus) == K
 
@@ -20,7 +20,9 @@
     end
 
     @testset "empty container" begin
-        dae = DAEta()
+        # Internal: DAEta(nodes, K) is the only public way to build one, so a mesh-less
+        # container never escapes the constructor. The guards are kept as insurance.
+        dae = ExaModelsCollocation.DAEta()
         @test dae.mesh === nothing
         @test dae.N == 0
         @test sprint(show, dae) == "DAEta (no mesh)"
@@ -28,7 +30,7 @@
         core = ExaModels.ExaCore(; concrete = Val(true))
         @test_throws ErrorException add_var_collocation(core, dae, 1:2)
 
-        set_mesh!(dae, nodes, K)
+        ExaModelsCollocation._set_mesh!(dae, nodes, K)
         @test dae.N == 20
     end
 

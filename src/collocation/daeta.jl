@@ -1,7 +1,7 @@
 # The collocation model container.
 #
 # DAEta separates the two things a collocation discretization needs, and holds nothing twice:
-#   mode : reference-element data in tau-space  (roots, basis, polynomial, weights)
+#   mode : reference-interval data in tau-space  (roots, basis, polynomial, weights)
 #   mesh   : physical placement in t-space        (nodes, h, t)
 # plus the handles registered by the add_*_collocation helpers. Each helper mutates it in
 # place and returns it alongside the ExaCore, mirroring how ExaModels threads its core.
@@ -18,7 +18,7 @@ Layout of one variable block created by [`add_var_collocation`](@ref), retrieved
 # Fields
 - `var`    : the `ExaModels.Variable` handle the block was allocated as
 - `dims`   : the user-declared dimensions
-- `krange` : collocation index range, `0:K` with the element-left boundary node, else `1:K`
+- `krange` : collocation index range, `0:K` with the interval-left boundary node, else `1:K`
 """
 struct VarBlock{V, D}
     var::V
@@ -29,7 +29,7 @@ end
 """
     CollocationMode
 
-Reference-element discretization, independent of where the elements sit along `t`.
+Reference-interval discretization, independent of where the intervals sit along `t`.
 
 # Fields
 - `roots`, `basis`, `polynomial` : the mode
@@ -44,16 +44,12 @@ end
 
 """
     DAEta(nodes, K; roots = GaussRadau(), basis = StateForm(), polynomial = Lagrange())
-    DAEta()
 
 Collocation metadata threaded through the `add_*_collocation` helpers.
 
-`nodes` are the `N+1` element boundaries (so `N = length(nodes) - 1`) and `K` is the degree
+`nodes` are the `N+1` interval boundaries (so `N = length(nodes) - 1`) and `K` is the degree
 of the interpolating polynomial. Both are fixed once, here, and every helper reads them off
 the `DAEta` rather than taking them again.
-
-The no-argument form builds an empty container; attach a mesh with [`set_mesh!`](@ref)
-before calling a helper that needs one.
 
 # Fields
 - `mode` : [`CollocationMode`](@ref) — `roots`, `basis`, `polynomial`, `weights`
@@ -76,6 +72,8 @@ mutable struct DAEta
     blocks::Vector{VarBlock}
 end
 
+# Internal: an empty container, filled in by _set_mesh!. The two-argument constructor is the
+# only public way to build a DAEta, so a mesh-less one never escapes this file.
 DAEta() = DAEta(nothing, nothing, (;), (;), VarBlock[])
 
 function DAEta(
@@ -85,16 +83,12 @@ function DAEta(
         basis::AbstractBasis = StateForm(),
         polynomial::AbstractPolynomial = Lagrange(),
     )
-    return set_mesh!(DAEta(), nodes, K; roots, basis, polynomial)
+    return _set_mesh!(DAEta(), nodes, K; roots, basis, polynomial)
 end
 
-"""
-    set_mesh!(dae, nodes, K; roots, basis, polynomial)
-
-Attach the mode and mesh to `dae`, in place. Called by the [`DAEta`](@ref) two-argument
-constructor; use it directly to fill in a `DAEta()`.
-"""
-function set_mesh!(
+# Internal: attach the mode and mesh in place. Validates nodes, K, and polynomial, so the
+# constructor is the single place a DAEta's discretization is decided.
+function _set_mesh!(
         dae::DAEta,
         nodes::AbstractVector,
         K::Integer;
@@ -103,7 +97,7 @@ function set_mesh!(
         polynomial::AbstractPolynomial = Lagrange(),
     )
     length(nodes) >= 2 ||
-        throw(ArgumentError("nodes needs at least 2 element boundaries, got $(length(nodes))"))
+        throw(ArgumentError("nodes needs at least 2 interval boundaries, got $(length(nodes))"))
     K >= 1 || throw(ArgumentError("K must be at least 1, got $K"))
 
     # polynomial.jl: only Lagrange interpolation is implemented
@@ -139,8 +133,8 @@ _degree(dae::DAEta) = length(_weights(dae).taus)
 # Which residual form the add_con_* helpers build (Biegler 10.7/10.14a vs 10.8/10.15a)
 _isstateform(dae::DAEta) = _mode(dae).basis isa StateForm
 
-# Number of elements, N = length(nodes) - 1
-function _nelements(dae::DAEta)
+# Number of intervals, N = length(nodes) - 1
+function _nintervals(dae::DAEta)
     mesh = _mesh(dae)
     mesh === nothing ? 0 : length(mesh.h)
 end
@@ -154,8 +148,7 @@ end
 # Guard for helpers that cannot run on an empty DAEta
 function _require_mesh(dae::DAEta, who::Symbol)
     _mesh(dae) === nothing && error(
-        "$who requires a mesh: build the container with `DAEta(nodes, K)` " *
-        "or attach one with `set_mesh!(dae, nodes, K)`."
+        "$who requires a mesh: build the container with `DAEta(nodes, K)`."
     )
     return nothing
 end
@@ -211,7 +204,7 @@ const _SCHEME_FIELDS = (:roots, :basis, :polynomial, :weights)
 function Base.getproperty(dae::DAEta, name::Symbol)
     hasfield(DAEta, name) && return getfield(dae, name)
 
-    name === :N && return _nelements(dae)
+    name === :N && return _nintervals(dae)
     if name === :K || name === :nodes || name in _SCHEME_FIELDS
         _require_mesh(dae, :getproperty)
         name === :K && return _degree(dae)
@@ -261,7 +254,7 @@ function Base.show(io::IO, dae::DAEta)
         """
         DAEta
 
-          mesh    N = $(_nelements(dae)) elements, K = $(_degree(dae)) degree
+          mesh    N = $(_nintervals(dae)) intervals, K = $(_degree(dae)) degree
           horizon [$(first(nodes)), $(last(nodes))]
           mode  $(mode.basis), $(mode.polynomial), $(mode.roots)
           vars    $(isempty(vars) ? "-" : vars)

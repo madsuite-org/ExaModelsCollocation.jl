@@ -17,8 +17,13 @@ Concretely, it supplies three things and nothing else:
 3. `DAEta`, which carries that discretization so the helpers never ask for it twice.
 
 Dependencies are restricted to **ExaModels** and **FastGaussQuadrature**. Do not add others.
-There is no `docs/` site — the README is the API reference, one section per exported name,
-shaped the way ExaModels documents `add_var`.
+
+There is no `docs/` site — the README is the API reference, and it is kept **short**, shaped
+the way ExaModels documents `add_var`: signature block, one or two sentences of what it does,
+`### Keyword Arguments`, and an example only where it disambiguates. A function and its macro
+share a section. Rationale, derivations, Biegler cross-references, and worked models do not
+belong there — they live in this file, in `src` comments, or in `test/`. Every code block in
+the README must run as written; execute them before committing.
 
 Convention used in comments and tests, not enforced anywhere: `z` differential state,
 `y` algebraic state, `u` control, `p` free decision parameter, `theta` mutable parameter,
@@ -26,12 +31,12 @@ Convention used in comments and tests, not enforced anywhere: `z` differential s
 
 ## The discretization, in the order the code builds it
 
-The horizon is split into `N` elements at `N+1` boundaries. Inside each element, the state is
+The horizon is split into `N` intervals at `N+1` boundaries. Inside each interval, the state is
 a degree-`K` polynomial, and the differential equations are enforced at `K` collocation
 points. `src/collocation/` builds that in four steps, and `src/ExaModelsCollocation.jl`
 includes them in exactly this dependency order:
 
-1. **`taus.jl`** — where in the reference element `[0,1]` the equations are enforced. The
+1. **`taus.jl`** — where in the reference interval `[0,1]` the equations are enforced. The
    collocation points `τ₁..τ_K` are roots of Gauss-Jacobi polynomials (Biegler, *Nonlinear
    Programming*, Thm. 10.1), mapped from `[-1,1]`: `GaussRadau`, `GaussLegendre`,
    `GaussLobatto`. Only the true collocation points are returned; the `τ₀ = 0` anchor is a
@@ -57,7 +62,7 @@ includes them in exactly this dependency order:
 nodes give `N = 20` and `t` is `20 × K`.
 
 `GaussLobatto` places a collocation point on `τ = 0`, which collides with the anchor
-`StateForm` prepends — repeated nodes give `NaN` barycentric weights — so `set_mesh!`
+`StateForm` prepends — repeated nodes give `NaN` barycentric weights — so `_set_mesh!`
 switches it to `DerivativeForm`, which needs no anchor, with a warning.
 
 Biegler's indexing is used throughout, including where it reuses letters: `j` indexes the
@@ -66,7 +71,7 @@ enforced.
 
 **The basis changes the structure of the equations, not just the weights.** Both forms use
 the *same variables*: `ż_{i,j}` is never a decision variable, it is the right-hand side
-evaluated at `z[…,i,j]`, and Biegler's separate element-entry coefficient `z_{i-1}` is just
+evaluated at `z[…,i,j]`, and Biegler's separate interval-entry coefficient `z_{i-1}` is just
 the `k = 0` index — no extra block. With `f_ij = f(z[…,i,j], t[i,j])`:
 
 | | collocation | continuity |
@@ -75,7 +80,7 @@ the `k = 0` index — no extra block. With `f_ij = f(z[…,i,j], t[i,j])`:
 | `DerivativeForm` | (10.8) `z[…,i,k] − z[…,i,0] = h[i] Σⱼ₌₁..ᴷ A[j,k] f_ij` | (10.15a) `z[…,i+1,0] − z[…,i,0] = h[i] Σⱼ₌₁..ᴷ b[j] f_ij` |
 
 `StateForm` puts the state under the weights and evaluates `f` once per row; `DerivativeForm`
-puts `f` under the weights, re-evaluating it at every collocation point of the element, which
+puts `f` under the weights, re-evaluating it at every collocation point of the interval, which
 is what makes it the implicit Runge-Kutta step (`A` the Butcher tableau, `b` its quadrature
 weights). The helpers branch on `_isstateform(dae)` at runtime and build both.
 
@@ -85,7 +90,7 @@ so it takes the collocation call's slice *and* generator. Passing the wrong arit
 active mode throws — do not make it silently build the other form.
 
 Under Lobatto, `τ₁ = 0` coincides with the `k = 0` index, so the `k = 1` row reduces to
-`z[…,i,1] = z[…,i,0]`: one redundant variable and one trivial equation per element. It is
+`z[…,i,1] = z[…,i,0]`: one redundant variable and one trivial equation per interval. It is
 consistent, and the observed order is unaffected.
 
 ## The helpers
@@ -96,16 +101,21 @@ consistent, and the observed order is unaffected.
 - `add_var_collocation` — `ExaModels.add_var` with the two mesh axes appended. The caller
   declares the **per-timepoint** shape; `z[v,c]` declared becomes `z[v,c,i,k]` allocated,
   `i = 1,…,N` and `k` over `krange`. `include_boundary = true` (default) gives `k = 0,…,K`,
-  carrying the element-left boundary node continuity needs; `false` gives `k = 1,…,K`.
+  carrying the interval-left boundary node continuity needs; `false` gives `k = 1,…,K`.
   Pass-through keywords (`start`, `lvar`, `uvar`, `tag`) are shaped to the **allocated**
   block, not the declared one.
 - `@add_con_collocation` — `ExaModels.@add_con` plus exactly three things: the expression is
   put into the residual form of `dae.mode`, the basis-polynomial sum is attached as an
   `add_con!` augmentation, and the iterator runs over the collocation points. Nothing else.
 - `@add_con_continuity` — the junction rows for `i = 1,…,N-1`, in the form the mode dictates.
+  Under `StateForm` the caller's iterator names only the **slots** to tie; `i` is fixed by
+  the mode, so the macro crosses it in under a gensym rather than making the caller
+  destructure an index the residual never lets them use. Same principle as `h`: data the
+  caller cannot reference does not belong in the tuple. `DerivativeForm` is the exception —
+  it reuses the collocation generator, where `i` is already the caller's own.
 
 In `DerivativeForm`, both helpers re-evaluate the caller's right-hand side at every
-collocation point `j` of the element. The stencil does that by rebinding the caller's own
+collocation point `j` of the interval. The stencil does that by rebinding the caller's own
 loop variables to that point, so the *same* expression means `f_ij` in the augmentation and
 `f_ik` in the base row. That is why the caller writes it once, unchanged, for either mode.
 
@@ -163,7 +173,7 @@ This mirrors `ExaCore`, which keeps every variable in `core.var` and only the na
 
 `N`, `K`, `nodes`, and the `mode` fields are **derived**, surfaced through `getproperty` — do
 not add them back as stored fields. Internally use `_mesh`, `_mode`, `_weights`, `_degree`,
-`_nelements` rather than reaching for fields that do not exist. Because `DAEta` overrides
+`_nintervals` rather than reaching for fields that do not exist. Because `DAEta` overrides
 `getproperty`, internal code must use `getfield`/`setfield!` for real fields.
 
 `_split_collocation_args` in `add_var_collocation.jl` accepts both `f(a; k = v)` and
@@ -189,6 +199,14 @@ helpers, using the two invariants that a fixed tolerance would miss:
   Radau, `O(h²ᴷ⁻²)` for Lobatto. A mis-weighted stencil can still converge; it loses order.
 
 `test/vanderpol.jl` covers the helpers end to end on the optimal control problem.
+
+`test/bruno.jl` does the same for parameter estimation, on the PEtab Benchmark Collection's
+`Bruno_JExpBot2016`. It is the regression test for two things nothing else covers: `start` on
+`add_var_collocation` (the state profile is initialized by integrating at the starting
+parameters), and grouping — seven species equations reduce to four `@add_con_collocation`
+calls. Its objective is checked against the negative log-likelihood PEtab.jl reports at the
+collection's nominal parameters, `-46.68818145`, to `atol = 1e-6`; that single assertion
+covers the whole discretization, so do not loosen it to make an unrelated change pass.
 
 `ExaModels.solution(result, z)` returns a plain 1-based array, so a block indexed `k = 0,…,K`
 lands on `1,…,K+1` there.

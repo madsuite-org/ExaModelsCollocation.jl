@@ -23,7 +23,7 @@ struct NotAPolynomial <: C.AbstractPolynomial end
         @test eltype(taus) <: AbstractFloat
         @test issorted(taus)
         @test allunique(taus)
-        @test all(0 .<= taus .<= 1)                   # mapped from [-1,1] onto the element
+        @test all(0 .<= taus .<= 1)                   # mapped from [-1,1] onto the interval
 
         # Which endpoints each family puts a point on
         @test (last(taus) ≈ 1) == (r isa GaussRadau || r isa GaussLobatto)
@@ -126,7 +126,7 @@ end
         dae = @test_logs (:warn, r"GaussLobatto") DAEta(nodes, 3; roots = GaussLobatto())
         @test dae.basis isa DerivativeForm
 
-        @test_throws ArgumentError set_mesh!(DAEta(), nodes, 3; polynomial = NotAPolynomial())
+        @test_throws ArgumentError DAEta(nodes, 3; polynomial = NotAPolynomial())
     end
 end
 
@@ -152,7 +152,7 @@ end
         @test size(mesh.t) == (4, 2)
         for i in 1:4, j in 1:2
             @test mesh.t[i, j] ≈ nodes[i] + mesh.h[i] * taus[j]
-            @test nodes[i] <= mesh.t[i, j] <= nodes[i + 1]   # stays inside its element
+            @test nodes[i] <= mesh.t[i, j] <= nodes[i + 1]   # stays inside its interval
         end
     end
 end

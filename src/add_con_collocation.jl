@@ -12,7 +12,7 @@
 #   DerivativeForm (10.8)  z[...,i,k] - z[...,i,0]         =  h[i] sum_{j=1..K} A[j,k] f_ij
 #
 # StateForm puts the state under the weights and evaluates f once per row; DerivativeForm
-# puts f under the weights and evaluates it at every collocation point of the element. zdot
+# puts f under the weights and evaluates it at every collocation point of the interval. zdot
 # is never a variable in either -- it is f evaluated there -- so add_var_collocation
 # allocates the same block for both, and only the residual changes.
 
@@ -26,7 +26,7 @@ iterators normally are:
     (leads..., i, k, t)
 
 `leads` are whichever of the block's own dimensions vary across this constraint — dimensions
-pinned in the state slice are simply left out. `i` and `k` run over the elements and
+pinned in the state slice are simply left out. `i` and `k` run over the intervals and
 collocation points. `t` is the collocation time `mesh.t[i,k]`, carried in the tuple because a
 traced index cannot look it up in a plain array; leave it unused if the right-hand side is
 autonomous.
@@ -47,7 +47,7 @@ collocation_itr(dae, 1:Nz, 1:Nc)    # → (v, c, i, k, t)
 function collocation_itr(dae::DAEta, leads...)
     _require_mesh(dae, :collocation_itr)
     mesh = _mesh(dae)
-    N, K = _nelements(dae), _degree(dae)
+    N, K = _nintervals(dae), _degree(dae)
     return vec([
         (lead..., i, k, mesh.t[i, k])
         for lead in Iterators.product(leads...), i in 1:N, k in 1:K
@@ -141,7 +141,7 @@ macro add_con_collocation(exs...)
             )
         else
             # 10.8. Base rows carry z[...,i,k] - z[...,i,0]; the weights ride on f, which is
-            # re-evaluated at each collocation point j = 1,...,K of the same element. The
+            # re-evaluated at each collocation point j = 1,...,K of the same interval. The
             # stencil rebinds the caller's loop variables to that point, so the very same
             # expression means f_ij here and f_ik above.
             $(esc(core)), $con = ExaModels.add_con(

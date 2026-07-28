@@ -5,7 +5,7 @@
     add_var_collocation(core, dae, dims...; include_boundary = true, name = nothing, kwargs...)
 
 Add a variable block laid out over the collocation mesh. A block declared with
-per-timepoint dimensions `dims` is allocated with the element index `i` and the
+per-timepoint dimensions `dims` is allocated with the interval index `i` and the
 collocation index `k` appended, so
 
 ```julia
@@ -15,7 +15,7 @@ core, z = add_var_collocation(core, dae, 1:nz, 1:Nc)   #  z[v, c, i, k]
 creates `nz × Nc × N × (K+1)` variables, where `N` and `K` come from `dae`.
 
 `include_boundary` selects the collocation index range: `true` (the default) gives
-`k = 0,…,K`, carrying the element-left boundary node needed for continuity; `false` gives
+`k = 0,…,K`, carrying the interval-left boundary node needed for continuity; `false` gives
 `k = 1,…,K`, the collocation points alone.
 
 Keyword arguments pass through to `ExaModels.add_var` and mean exactly what they do there —
@@ -42,7 +42,7 @@ function add_var_collocation(
     krange = include_boundary ? (0:K) : (1:K)
 
     core, var = ExaModels.add_var(
-        core, dims..., 1:_nelements(dae), krange;
+        core, dims..., 1:_nintervals(dae), krange;
         name = name, kwargs...,
     )
 

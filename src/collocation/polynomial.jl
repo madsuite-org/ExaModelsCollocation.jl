@@ -41,7 +41,7 @@ end
 """
     ell1j(nodes) -> Vector
 
-Continuity weights `b[j] = ℓⱼ(1)`, each basis polynomial over `nodes` at the element's right
+Continuity weights `b[j] = ℓⱼ(1)`, each basis polynomial over `nodes` at the interval's right
 endpoint `τ = 1`. Length `length(nodes)`.
 """
 ell1j(nodes) = _lagrange(nodes, _baryweights(nodes), one(eltype(nodes)))

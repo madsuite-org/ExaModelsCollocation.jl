@@ -42,7 +42,7 @@ using MadNLP
 
         # One call for every component and condition
         @add_con_continuity(core, dae, cont,
-            z[v, c] for (v, c, i) in continuity_itr(dae, 1:nz, 1:Nc))
+            z[v, c] for (v, c) in continuity_itr(dae, 1:nz, 1:Nc))
 
         # z(t0) = (0, p1, 0). The zero entries are one expression, the p-linked one another.
         ExaModels.@add_con(core, ic_fix,
