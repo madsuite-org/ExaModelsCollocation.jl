@@ -1,6 +1,12 @@
 # ExaModelsCollocation.jl
 
-Data structure and helper functions for orthogonal collocation in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl).
+Data structure and helper functions for implementing orthogonal collocation in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl).
+
+### Feature Summary
+- `DAEta` : data structure containing collocation metadata used by collocation helper functions
+- `add_var_collocation`/`@add_var_collocation` : creates variable over every collocation point
+- `add_con_collocation`/`@add_con_collocation` : creates collocation constraints over every collocation point
+- `add_con_continuity`/`@add_con_continuity` : creates continuity constraints over every interval
 
 For complete examples, refer to `test/vanderpol.jl` (optimal control) and `test/bruno.jl` (parameter
 estimation).
@@ -12,21 +18,21 @@ estimation).
 ```julia
 DAEta(nodes, K; roots = GaussRadau(), basis = StateForm(), polynomial = Lagrange())
 ```
-Collocation metadata used by the collocation helper functions.
+Creates a data object `DAEta` which contains collocation metadata used by the collocation helper functions.
 
 ### Arguments
-- `nodes` : interval boundary placements (`N+1` interval boundaries, where `N` is the number of intervals).
-- `K` : degree of the interpolating polynomial
+- `nodes` : interval boundary placements for `N+1` boundaries, where `N` is the number of intervals
+- `K` : degree of the interpolating polynomial (number of collocation points per interval)
 
 ### Keyword Arguments
-- `roots` : collocation family (`GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`)
-- `basis` : differential-state representation (`StateForm()` or `DerivativeForm()`)
-- `polynomial` : interpolating polynomial (`Lagrange()` only)
+- `roots` : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
+- `basis` : differential-state representation, `StateForm()` or `DerivativeForm()`
+- `polynomial` : interpolating polynomial, `Lagrange()` only, so it is left at the default
 
 ### Fields
-- `mode` : `roots`, `basis`, `polynomial`, `weights` (`A` collocation, `b` continuity, `taus`)
+- `mode` : `roots`, `basis`, `polynomial`, `weights`: `A` collocation, `b` continuity, `taus`
 - `mesh` : `nodes`, `h` interval lengths, `t` time
-- `vars`, `cons` : `NamedTuple`s of the named constrained handles for augmentation.
+- `vars`, `cons` : `NamedTuple`s of the named constrained handles for augmentation
 - `blocks` : `VarBlock` collocation variable dimensions 
 
 ---
@@ -34,20 +40,21 @@ Collocation metadata used by the collocation helper functions.
 ## `add_var_collocation`
 
 ```julia
-add_var_collocation(core, dae, dims...; include_boundary = true, name = nothing, kwargs...)
+add_var_collocation(core, dims...; include_boundary = true, name = nothing, kwargs...)
 ```
 
-Adds a variable block laid out over the collocation mesh of `dae`. `dims` is the shape at a
-single point in time; the interval index over `1:N` and the collocation index over `krange`
-are appended. Returns `(core, var)`, `dae` is mutated in place.
+Adds variables with dimensions specified by `dims` over the collocation mesh in `CollocationExaCore` to
+`core`. `dims` is the dimensions at a collocation point. The interval index over `1:N` and 
+the collocation index over `krange` are appended. Returns `(core, CollocationVariable)`.
 
 ### Keyword Arguments
-- `include_boundary` : `true` (default) gives `k = 0,…,K`, carrying the interval-left boundary node that continuity needs; `false` gives `k = 1,…,K`, the collocation points alone.
-- remaining kwargs passed on to `ExaModels.add_var`. `start`, `lvar`, `uvar`, and `tag` are shaped to the **allocated** block, `(dims..., 1:N, krange)`.
+- `include_boundary` : `true` (default) gives `k = 0,…,K` with `k = 0` being the interval-left boundary node, `false` gives `k = 1,…,K`
+- `name` : when given as `Val(:name)`, registers the variable in `core` for later retrieval as `core.name`. See `@add_var_collocation` for the idiomatic named interface.
+- remaining kwargs passed on to `ExaModels.add_var`: `start`, `lvar`, `uvar`, `tag`
 
 ### Example
 ```julia
-julia> c, z = add_var_collocation(c, dae, 1:3, 1:2);   # z[v,c,i,k], 3 × 2 × N × (K+1)
+julia> c, z = add_var_collocation(c, 1:3, 1:2) # z[v,c,i,k], 3 × 2 × N × (K+1)
 ```
 
 ---
@@ -55,36 +62,52 @@ julia> c, z = add_var_collocation(c, dae, 1:3, 1:2);   # z[v,c,i,k], 3 × 2 × N
 ## `@add_var_collocation`
 
 ```julia
-@add_var_collocation(core, dae, name, dims...; kwargs...)
+@add_var_collocation(core, [name,] dims...; kwargs...)
 ```
 
-Macro form of `add_var_collocation`, relating to it as `ExaModels.@add_var` does to
-`add_var`: `name` is written bare and bound in the calling scope along with `core`.
+Macro interface for `add_var_collocation`. Updates `core` in the calling scope.
+- **Named** (`@add_var_collocation(core, name, dims...)`): binds `name` to the new `Variable` in the local scope
+  and registers it in `core` and `dae` for later retrieval as `core.name` or `model.name`.
+- **Anonymous** (`@add_var_collocation(core, dims...)`): equivalent to `c, name = add_var_collocation(c, dims...)`.
+
+Accepts the same keyword arguments as `add_var_collocation`.
 
 ### Example
 ```julia
-julia> @add_var_collocation(c, dae, u, 1:1, 1:2; include_boundary = false);   # k = 1,…,K
+julia> @add_var_collocation(c, z, 1:3) # z (z[v,i,k], 3 × N × (K+1)) is now in scope; core.z also works
 ```
 
 ---
 
-## `collocation_itr`
+
+## `add_con_collocation`
 
 ```julia
-collocation_itr(dae, leads...)
+add_con_collocation(core, z, generator; name = nothing, kwargs...)
 ```
 
-Builds an iterator for `@add_con_collocation` over the collocation points by appending
-`i, k, t` to `leads`, where `t = mesh.t[i,k]`.
+Adds the collocation constraints for the variable `z` to `core`, enforcing `dz/dt = f` at every
+collocation point of the mesh in `CollocationExaCore`. Returns `(core, CollocationConstraint)`.
 
 ### Arguments
-- `leads` : variable dimensions that vary across the constraint
+- `z` : the collocated variable, from `add_var_collocation`
+- `generator` : right-hand side function `f` of `z`
+
+### Keyword Arguments
+- `name` : when given as `Val(:name)`, registers the constraint in `core` for later retrieval as `core.name`. See `@add_con_collocation` for the idiomatic named interface.
+- remaining kwargs passed on to `ExaModels.add_con`: `lcon`, `ucon`, `start`, `tag`
 
 ### Example
 ```julia
-julia> itr = collocation_itr(dae, 1:Nc);         # (c, i, k, t)
+julia> c, z = add_var_collocation(c, 1:Nz, 1:Nc)
 
-julia> itr = collocation_itr(dae, 1:Nz, 1:Nc);   # (v, c, i, k, t)
+julia> c, decay = ExaModels.add_var(c, 1:Nz)
+
+julia> itr = [(v,c) for v in 1:Nz, c in 1:Nc]
+
+julia> c, coll = add_con_collocation(c, z,
+           -decay[v] * z[v,c,i,k] # right-hand side function expression at collocation point i,k
+           for (v,c) in itr)
 ```
 
 ---
@@ -92,56 +115,49 @@ julia> itr = collocation_itr(dae, 1:Nz, 1:Nc);   # (v, c, i, k, t)
 ## `@add_con_collocation`
 
 ```julia
-@add_con_collocation(core, dae, name, z[leads...], generator; kwargs...)
+@add_con_collocation(core, [name,] generator; kwargs...)
 ```
 
-Adds the collocation residual for a state slice, enforcing `dz/dt = f` at every collocation
-point. With `f_ij = f(z[…,i,j], t[i,j])`, for `k = 1,…,K`:
+Macro interface for `add_con_collocation`. Updates `core` in the calling scope.
+- **Named** (`@add_con_collocation(core, name, z[dims...], generator)`): binds `name` to the new `Constraint`
+  in the local scope and registers it in `core` for later retrieval as `core.name` or `model.name`.
+- **Anonymous** (`@add_con_collocation(core, z[dims...], generator)`): equivalent to
+  `c, name = add_con_collocation(c, z, generator)`.
 
-| `basis` | residual |
-|---|---|
-| `StateForm` | `Σⱼ₌₀..ᴷ A[j,k] z[…,i,j] = h[i] f_ik` |
-| `DerivativeForm` | `z[…,i,k] − z[…,i,0] = h[i] Σⱼ₌₁..ᴷ A[j,k] f_ij` |
-
-`h[i]` is attached by the macro. Updates `core` and `dae` in the calling scope and binds `name`.
-
-### Arguments
-- `z[leads...]` : the collocated variable. Literal indices pin a dimension; names bound by the iterator vary with it
-- `generator` : `f` over a `collocation_itr`. One call per structurally distinct `f`, and no more
-
-### Keyword Arguments
-- passed on to `ExaModels.add_con`
+Accepts the same keyword arguments as `add_con_collocation`.
 
 ### Example
 ```julia
-julia> @add_con_collocation(c, dae, coll1, z[1,c],  # pin v = 1, vary c
-           z[2,c,i,k]                               # the right-hand side function expression
-           for (c,i,k,t) in collocation_itr(dae, 1:Nc));
+julia> @add_var_collocation(c, z, 1:4)
 
-julia> c, decay = ExaModels.add_var(c, Nz);
+julia> @add_var_collocation(c, u, 1:3; include_boundary = false)
 
-julia> @add_con_collocation(c, dae, coll, z[v,c],   # one call, every v
-           -decay[v] * z[v,c,i,k]                   # the right-hand side function expression
-           for (v,c,i,k,t) in collocation_itr(dae, 1:Nz, 1:Nc));
+julia> @add_con_collocation(c, coll, z,  # v held at 1, c varying
+           z[v,i,k] * u[l,i,k] * t^2  # the right-hand side function expression
+           for (v,l) in itr)
 ```
 
 ---
 
-## `continuity_itr`
+## `add_con_continuity`
 
 ```julia
-continuity_itr(dae, leads...)
+add_con_continuity(core, z; name = nothing, kwargs...)
 ```
 
-Builds an iterator for a `StateForm` `@add_con_continuity` over the state slots to tie. The
-junction index `i = 1,…,N-1` is appended by the macro, not carried here.
+Adds the continuity constraints for the variable `z` to `core`, enforcing each interval's terminal value
+to equal the value at the next interval's left boundary node, for `i = 1,…,N-1`. Returns `(core, Constraint)`.
 
 ### Arguments
-- `leads` : variable dimensions that vary across the constraint
+- `z` : a `CollocationVariable`, from `add_var_collocation`
+
+### Keyword Arguments
+- `name` : when given as `Val(:name)`, registers the constraint in `core` and `dae` for later retrieval as `dae.name` or `core.name`. See `@add_con_continuity` for the idiomatic named interface.
+- remaining kwargs passed on to `ExaModels.add_con`: `lcon`, `ucon`, `start`, `tag`
 
 ### Example
 ```julia
-julia> itr = continuity_itr(dae, 1:Nz, 1:Nc);    # (v, c)
+julia> c, cont = add_con_continuity(c, z)
 ```
 
 ---
@@ -149,44 +165,18 @@ julia> itr = continuity_itr(dae, 1:Nz, 1:Nc);    # (v, c)
 ## `@add_con_continuity`
 
 ```julia
-@add_con_continuity(core, dae, name, z[leads...] for (leads...) in itr; kwargs...)
-@add_con_continuity(core, dae, name, z[leads...], generator; kwargs...)
+@add_con_continuity(core, [name,] z; kwargs...)
 ```
 
-Ties each interval's terminal polynomial value to the next interval's boundary node, for
-`i = 1,…,N-1`. The form is set by `dae.basis`; passing the wrong one throws.
+Macro interface for `add_con_continuity`. Updates `core` in the calling scope.
+- **Named** (`@add_con_continuity(core, name, z)`): binds `name` to the new `CollocationConstraint`
+  in the local scope and registers it in `core` for later retrieval as `core.name` or `model.name`.
+- **Anonymous** (`@add_con_continuity(core, z)`): equivalent to
+  `c, name = add_con_continuity(c, z)`.
 
-| `basis` | residual | call |
-|---|---|---|
-| `StateForm` | `Σⱼ₌₀..ᴷ b[j] z[…,i,j] = z[…,i+1,0]` | slice only, over a `continuity_itr` |
-| `DerivativeForm` | `z[…,i+1,0] − z[…,i,0] = h[i] Σⱼ₌₁..ᴷ b[j] f_ij` | slice and generator, over a `collocation_itr` |
-
-`StateForm` needs no `f`, so one call covers every slot. `DerivativeForm` contains `f`, so it
-takes the same slice and generator as its `@add_con_collocation` call.
-
-### Arguments
-- `z[leads...]` : the collocated variable, as in `@add_con_collocation`
-- `generator` : `DerivativeForm` only — `f` over a `collocation_itr`
-
-### Keyword Arguments
-- passed on to `ExaModels.add_con`
+Accepts the same keyword arguments as `add_con_continuity`.
 
 ### Example
 ```julia
-julia> @add_con_continuity(c, dae, cont,                            # StateForm
-           z[v,c] for (v,c) in continuity_itr(dae, 1:Nz, 1:Nc));
-
-julia> @add_con_continuity(c, dae, cont1, z[1,c],                   # DerivativeForm
-           z[2,c,i,k] for (c,i,k,t) in collocation_itr(dae, 1:Nc));
+julia> @add_con_continuity(c, cont, z)
 ```
-
----
-
-## `block`
-
-```julia
-block(dae, var) -> VarBlock
-```
-
-The layout recorded for a handle: its declared `dims` and its `krange`. Looked up by handle
-identity, so it works whether or not the block was named.
