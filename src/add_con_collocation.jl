@@ -50,9 +50,18 @@ function _row_layout(itr, nlead, nmesh, who::Symbol)
     return RowLayout(len, nlead, len - nmesh + 1, len - nmesh + 2)
 end
 
-# The slot of z a row constrains, and everything ahead of the mesh entries.
+# The slot of z a row constrains.
 _slot(d, L::RowLayout) = ntuple(j -> d[j], L.nlead)
-_head(d, L::RowLayout) = d[1:(L.i - 1)]
+
+# Position of the base row a given row of the iterator feeds at collocation point k
+function _basepos(pos, d, L::RowLayout, k)
+    key = (_slot(d, L)..., d[L.i], k)
+    haskey(pos, key) || throw(ArgumentError(
+        "add_con_collocation: the iterator has no row at $key; it must cover every " *
+        "collocation point of each interval."
+    ))
+    return pos[key]
+end
 
 """
     add_con_collocation(core, z, generator; name = nothing, kwargs...)
@@ -130,29 +139,23 @@ function add_con_collocation(
         ])
         core, _ = ExaModels.add_con!(core, con, Base.Generator(_state_stencil(z, nlead), st))
     else
-        # 10.8. Base rows carry z[...,i,k] - z[...,i,0]; the weights ride on f, which is
-        # re-evaluated at every collocation point j = 1,...,K of the same interval. The
-        # stencil rows are the caller's own rows with the mesh entries moved to that point,
-        # so the very same f means f_ij here and f_ik above.
+        # 10.8. One base row z[...,i,k] - z[...,i,0] per collocation point of each slot.
         base = [(_slot(d, L)..., d[L.i], d[L.k]) for d in itr]
         core, con = ExaModels.add_con(
             core, Base.Generator(_derivative_base(z, nlead), base);
             name = name, kwargs...,
         )
 
-        # Each stencil row is the caller's own row with the mesh entries moved to j, then the
-        # augmentation key and weight appended past it. On an adaptive mesh the row carries
-        # no t -- the caller reads it off the parameter block, so writing tpar[i,k] means
-        # tpar[i,j] here for free -- and h rides on the generator instead of the weight.
+        # Each row of the iterator is an f_ij, carrying A[j,k] into the base row of every k.
+        pos = Dict(r => n for (n, r) in enumerate(base))
         st = hp === nothing ?
             vec([
-                (_head(d, L)..., d[L.i], j, mesh.t[d[L.i], j],
-                 n, -mesh.h[d[L.i]] * w.A[j, d[L.k]])
-                for (n, d) in enumerate(itr), j in 1:K
+                (d..., _basepos(pos, d, L, k), -mesh.h[d[L.i]] * w.A[d[L.k], k])
+                for d in itr, k in 1:K
             ]) :
             vec([
-                (_head(d, L)..., d[L.i], j, n, w.A[j, d[L.k]])
-                for (n, d) in enumerate(itr), j in 1:K
+                (d..., _basepos(pos, d, L, k), w.A[d[L.k], k])
+                for d in itr, k in 1:K
             ])
         aug = hp === nothing ?
             (s -> s[L.len + 1] => s[L.len + 2] * f(s)) :

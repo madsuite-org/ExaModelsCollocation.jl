@@ -33,7 +33,7 @@ Creates an intermediate data object `ExaCore`, which contains collocation metada
 - remaining kwargs passed on to `ExaCore`: `backend`, `minimize`, `name`
 
 ### Properties
-- `mode` : `roots`, `basis`, `polynomial`, `weights`: `A` collocation, `b` continuity, `taus`
+- `mode` : `roots`, `basis`, `polynomial`, `weights`
 - `mesh` : `nodes`, `h` interval lengths, `t` time (`hpar`, `tpar` if `adaptive = true`)
 - `blocks` : `CollocationVariable` dimensions
 

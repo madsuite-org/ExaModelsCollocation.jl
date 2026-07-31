@@ -101,6 +101,21 @@ end
         @test u.krange == 1:K
     end
 
+    @testset "Integer dims are normalized to ranges" begin
+        # add_var takes an Integer or a UnitRange per dimension, `n` meaning 1:n. The block
+        # stores ranges either way, so add_con_continuity can enumerate its slots -- left as
+        # an Integer, the coverage check would see the single slot z[nz] and pass vacuously.
+        core = CollocationExaCore(nodes, K)
+        core, z = add_var_collocation(core, nz)
+        @test z.dims == (1:nz,)
+        @test ExaModels.size(z.size) == (nz, N, K + 1)
+
+        mt = core.mesh.t
+        itr = [(nz, i, k, mt[i, k]) for i in 1:N, k in 1:K]      # covers z[nz] alone
+        core, _ = add_con_collocation(core, z, (-z[v, i, k] for (v, i, k, t) in itr))
+        @test_throws ArgumentError add_con_continuity(core, z)
+    end
+
     @testset "the handle is a Variable that carries its layout" begin
         core = CollocationExaCore(nodes, K)
         core, z = add_var_collocation(core, 1:nz)
@@ -263,6 +278,26 @@ end
         end
     end
 
+    @testset "a row entry that varies with the collocation point" begin
+        # dz/dt = -2t z, z(0) = 1 => exp(-t^2), with the coefficient in the middle of the row
+        # rather than as the trailing t, so it varies over the interval the weights sum across.
+        function decay_t(basis; N = 10, K = 3)
+            core = CollocationExaCore(range(0.0, 1.0; length = N + 1), K; basis)
+            @add_var_collocation(core, z, 1:1)
+            mt = core.mesh.t
+            itr = [(v, 2 * mt[i, k], i, k, mt[i, k]) for v in 1:1, i in 1:N, k in 1:K]
+            @add_con_collocation(core, coll, z, -g * z[v, i, k] for (v, g, i, k, t) in itr)
+            @add_con_continuity(core, cont, z)
+            ExaModels.@add_con(core, ic, z[v, 1, 0] - 1.0 for v in 1:1)
+            result = madnlp(ExaModels.ExaModel(core); print_level = MadNLP.ERROR, tol = 1e-12)
+            return ExaModels.solution(result, z)[1, end, end]
+        end
+
+        sf, df = decay_t(StateForm()), decay_t(DerivativeForm())
+        @test sf ≈ df rtol = 1e-8
+        @test df ≈ exp(-1) rtol = 1e-6
+    end
+
     @testset "convergence order" begin
         # Halving h must shrink the terminal error by 2^p, p set by the family. A stencil
         # that is merely consistent but mis-weighted loses order here even when it converges.
@@ -336,6 +371,8 @@ end
         # changing the interval count changes the variable count, so it needs a rebuild
         @test_throws DimensionMismatch set_nodes!(acore, collect(range(0.0, 1.0; length = 7)))
         @test_throws ArgumentError set_nodes!(acore, [0.0, 0.4, 0.2, 0.6, 0.8, 1.0])
+        # and a repeated boundary, which would collapse an interval to zero width
+        @test_throws ArgumentError set_nodes!(acore, [0.0, 0.2, 0.2, 0.6, 0.8, 1.0])
     end
 end
 

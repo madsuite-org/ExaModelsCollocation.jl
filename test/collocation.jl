@@ -33,7 +33,8 @@ struct NotAPolynomial <: C.AbstractPolynomial end
     @testset "K = 1 special cases" begin
         @test C._get_taus(GaussRadau(), 1) ≈ [1.0]        # backward Euler
         @test C._get_taus(GaussLegendre(), 1) ≈ [0.5]     # implicit midpoint
-        @test_throws ErrorException C._get_taus(GaussLobatto(), 1)
+        # Lobatto has no points to place below K = 2, and Collocation says so up front
+        @test_throws ArgumentError Collocation([0.0, 1.0], 1; roots = GaussLobatto())
     end
 end
 
@@ -45,7 +46,7 @@ end
         r isa GaussLobatto && K < 2 && continue
 
         taus = C._get_taus(r, K)
-        anchored = C._anchor(taus)                    # [0, tau_1..tau_K]
+        anchored = C._add_tau0(taus)                  # [0, tau_1..tau_K]
         @test length(anchored) == K + 1
         @test anchored[1] == 0
 
@@ -123,7 +124,9 @@ end
         nodes = range(0.0, 1.0; length = 5)
 
         # GaussLobatto has a point on tau = 0, so it cannot carry StateForm's anchor
-        tag = @test_logs (:warn, r"GaussLobatto") Collocation(nodes, 3; roots = GaussLobatto())
+        # so the pair is refused rather than silently repaired, and the basis is asked for
+        @test_throws ArgumentError Collocation(nodes, 3; roots = GaussLobatto())
+        tag = Collocation(nodes, 3; roots = GaussLobatto(), basis = DerivativeForm())
         @test tag.mode.basis isa DerivativeForm
 
         @test_throws ArgumentError Collocation(nodes, 3; polynomial = NotAPolynomial())
@@ -132,6 +135,8 @@ end
         @test_throws ArgumentError CollocationExaCore([0.0], 3)
         @test_throws ArgumentError CollocationExaCore(nodes, 0)
         @test_throws ArgumentError CollocationExaCore([0.0, 2.0, 1.0], 3)
+        # a repeated boundary is a zero-width interval, not a mesh
+        @test_throws ArgumentError CollocationExaCore([0.0, 0.5, 0.5, 1.0], 3)
     end
 end
 

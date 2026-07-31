@@ -30,6 +30,7 @@ function add_var_collocation(
     )
     K = _degree(core)
     krange = include_boundary ? (0:K) : (1:K)
+    dims = map(_dimrange, dims)
 
     core, var = ExaModels.add_var(
         core, dims..., 1:_nintervals(core), krange;
@@ -39,6 +40,12 @@ function add_var_collocation(
     z = CollocationVariable(var, dims, krange)
     return _addblock(_rehandle(core, var, z, name), z), z
 end
+
+# ExaModels takes an Integer or a UnitRange per dimension, `n` meaning 1:n (_start/_length in
+# its nlp.jl). The block carries its own dims and _covered_slots enumerates them to check that
+# every slot was collocated, so they are normalized here rather than left in either spelling.
+_dimrange(d::Integer) = 1:Int(d)
+_dimrange(d) = d
 
 """
     @add_var_collocation(core, [name,] dims...; kwargs...)

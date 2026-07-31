@@ -1,14 +1,15 @@
-# The interpolating polynomial family, and the basis evaluations the weights are built from.
-# Lagrange is preferred because its coefficients are the profile values themselves, so they
-# inherit the same variable bounds (L. T. Biegler, Nonlinear Programming, Chapter 10.2.1).
-#
-# Naming follows Biegler: ell/dell are the basis and its derivative, Omega its integral.
+# The interpolating polynomial used in each interval
+# default = Lagrange()
+#   Lagrange : Lagrange interpolation polynomials
+# NOTE: Lagrange interpolation polynomials are preferred because polynomial coefficients
+# have the same variable bounds as the profile values themselves
+# (L. T. Biegler, Nonlinear Programming, Chapter 10.2.1)
 """
     AbstractPolynomial
 
 Abstract type for the interpolating polynomial family used within each interval.
 A concrete subtype supplies the basis functions and the weights for the
-colocation and continuity constraints.
+collocation and continuity constraints.
 """
 abstract type AbstractPolynomial end
 
@@ -19,10 +20,9 @@ Lagrange interpolation polynomials.
 """
 struct Lagrange <: AbstractPolynomial end
 
-# Every weight below is `basis function j, evaluated somehow at point k`, laid out as
+# Every weight below is `basis function j, evaluated some at point k`, laid out as
 # `[j, k]` so the constraint helpers can read a column per collocation point. `nodes` are
 # the interpolation nodes the basis is built over; `at` are the points to evaluate at.
-
 """
     delljk(nodes, at) -> Matrix
 

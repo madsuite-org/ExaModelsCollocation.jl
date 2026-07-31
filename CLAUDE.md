@@ -23,8 +23,7 @@ There is no `docs/` site — the README is the API reference, and it is kept **s
 the way ExaModels documents `add_var`: signature block, one or two sentences of what it does,
 `### Keyword Arguments`, and an example only where it disambiguates. A function and its macro
 share a section. Rationale, derivations, Biegler cross-references, and worked models do not
-belong there — they live in this file, in `src` comments, or in `test/`. Every code block in
-the README must run as written; execute them before committing.
+belong there — they live in this file, in `src` comments, or in `test/`.
 
 Convention used in comments and tests, not enforced anywhere: `z` differential state,
 `y` algebraic state, `u` control, `p` free decision parameter, `theta` mutable parameter,
@@ -64,8 +63,9 @@ container, in that include order.
 nodes give `N = 20` and `t` is `20 × K`.
 
 `GaussLobatto` places a collocation point on `τ = 0`, which collides with the anchor
-`StateForm` prepends — repeated nodes give `NaN` barycentric weights — so `_set_mesh!`
-switches it to `DerivativeForm`, which needs no anchor, with a warning.
+`StateForm` prepends — repeated nodes give `NaN` barycentric weights — so `Collocation`
+rejects the pair outright rather than repairing it, and `basis = DerivativeForm()` has to be
+asked for. It also refuses `K < 2`, which Lobatto has no points to fill.
 
 Biegler's indexing is used throughout, including where it reuses letters: `j` indexes the
 basis polynomial being summed (and the mesh, `t[i,j]`), `k` the collocation point being
@@ -114,7 +114,10 @@ residual depends on belongs in the function.
   `add_var(core)` gives a scalar variable. `include_boundary = true` (default) gives
   `k = 0,…,K`, carrying the interval-left boundary node continuity needs; `false` gives
   `k = 1,…,K`. Pass-through keywords (`start`, `lvar`, `uvar`, `tag`) are shaped to the
-  **allocated** block, not the declared one.
+  **allocated** block, not the declared one. `add_var` admits an `Integer` dimension as well
+  as a `UnitRange`, `n` meaning `1:n`, so `_dimrange` normalizes them before the block stores
+  them — `_covered_slots` enumerates `dims`, and over an `Integer` it would see the single
+  slot `n` and pass vacuously.
 - `add_con_collocation` — `ExaModels.add_con` plus exactly three things: the expression is
   put into the residual form of `core.mode`, the basis-polynomial sum is attached as an
   `add_con!` augmentation, and the iterator runs over the collocation points. Nothing else.
@@ -127,13 +130,13 @@ residual depends on belongs in the function.
   at all and it would be left silently untied — so `add_con_collocation` comes first, for
   either basis.
 
-In `DerivativeForm`, both helpers re-evaluate the caller's right-hand side at every
-collocation point `j` of the interval, by handing `f` a row of the caller's own iterator with
-the trailing `(i, k, t)` moved to that point. The *same* expression therefore means `f_ij` in
-the augmentation and `f_ik` in the base row, which is why the caller writes it once,
-unchanged, for either mode. Continuity does the same thing from the other side: each row of
-the iterator is an `f_ik` already, so it carries its own `b[k]` into the junction row of its
-interval.
+**In `DerivativeForm` a row of the caller's iterator is an `f_ij`, not an `f_ik`.** 10.7 wants
+one right-hand side per row; 10.8 wants `K` of them summed into each row, and the iterator
+supplies those, so its mesh index is the summation index. Both helpers take the row exactly as
+written and carry its weight — `A[j,k]` into the base row of every `k`, `b[j]` into the
+junction row of its interval — rather than rebuilding it at another point. That is what lets
+the caller write one expression for either mode, and what makes a row entry that varies over
+the interval mean the same thing in both.
 
 Initial, terminal, and path conditions carry **no collocation content**. Write them with
 plain `ExaModels.@add_con`. Do not grow this module past the three helpers above.
@@ -277,9 +280,8 @@ allocates `N·K + N` parameters and traces a product of two symbolic terms. Keep
 Float64` — a build-time silence, so this is worth stating twice. That is why an adaptive row
 ends `(…, i, k)` and a numeric one ends `(…, i, k, t)`: with a parameter mesh the caller
 indexes `mesh.tpar[i,k]` inside the right-hand side instead of destructuring `t`.
-`_row_layout` builds the `RowLayout` from `_nmesh(core)` accordingly. It also means the same
-expression means `f_ij` in a `DerivativeForm` augmentation and `f_ik` in the base row for free,
-since `tpar` is indexed by whatever `k` the row carries.
+`_row_layout` builds the `RowLayout` from `_nmesh(core)` accordingly, and since the row is
+used as written, `tpar` is indexed by whatever point the row already carries.
 
 `set_nodes!` recomputes `nodes`, `h`, `t` in place and writes both parameter blocks through.
 It redistributes a **fixed** number of intervals; adding one changes the variable count and
@@ -348,5 +350,6 @@ julia --project=. -e 'using Pkg; Pkg.test()'
 julia --project=. -e 'using ExaModelsCollocation'
 ```
 
-Julia compat is `1.10+` (CI tests 1.11, 1.12, and `pre`); ExaModels is pinned to `0.11`.
+Julia compat is `1.11+`, the floor ExaModels itself sets (CI tests 1.11, 1.12, and `pre`);
+ExaModels is pinned to `0.11`.
 Test-only dependencies go in `test/Project.toml`, not the root `Project.toml`.

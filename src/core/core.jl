@@ -94,16 +94,22 @@ function Collocation(
     polynomial isa Lagrange ||
         throw(ArgumentError("Only Lagrange interpolation polynomials are supported currently."))
 
+    # taus.jl: Lobatto's K points include both endpoints, so there are none to place below K = 2
+    roots isa GaussLobatto && K < 2 &&
+        throw(ArgumentError("GaussLobatto requires K ≥ 2, got $K"))
+
     # taus.jl / basis.jl: GaussLobatto puts a collocation point on tau = 0, which collides
     # with the tau0 = 0 anchor StateForm prepends -- repeated nodes give NaN barycentric
-    # weights. DerivativeForm needs no anchor, so switch to it.
-    if roots isa GaussLobatto && basis isa StateForm
-        @warn "GaussLobatto: automatically switching to DerivativeForm since not possible with StateForm."
-        basis = DerivativeForm()
-    end
+    # weights. DerivativeForm needs no anchor, so it is the only basis Lobatto admits.
+    roots isa GaussLobatto && basis isa StateForm && throw(ArgumentError(
+        "GaussLobatto collocates tau = 0, which StateForm cannot anchor; " *
+        "pass `basis = DerivativeForm()`."
+    ))
 
     bnds = collect(float.(nodes))
-    issorted(bnds) || throw(ArgumentError("nodes must be nondecreasing along t"))
+    # A repeated boundary would be a zero-width interval, whose collocation rows are degenerate
+    issorted(bnds; lt = <=) ||
+        throw(ArgumentError("nodes must be strictly increasing along t"))
 
     # taus.jl: the K collocation points; basis.jl: collocation/continuity weights A, b
     taus = _get_taus(roots, K)
@@ -236,7 +242,8 @@ function set_nodes!(c, nodes::AbstractVector)
         "set_nodes!: expected $(length(mesh.nodes)) boundaries, got $(length(nodes)); " *
         "changing the number of intervals needs a rebuild"
     ))
-    issorted(nodes) || throw(ArgumentError("set_nodes!: nodes must be nondecreasing along t"))
+    issorted(nodes; lt = <=) ||
+        throw(ArgumentError("set_nodes!: nodes must be strictly increasing along t"))
 
     taus = _weights(c).taus
     copyto!(mesh.nodes, nodes)
@@ -341,7 +348,8 @@ function _show_collocation(io::IO, c, header)
     tag = _tag(c)
     nodes = tag.mesh.nodes
     vars = join(
-        ["$(b.name)[$(join(b.dims, ", ")), i, k=$(b.krange)]" for b in tag.blocks], ", ",
+        ["$(b.name)[$(join((b.dims..., "i", "k=$(b.krange)"), ", "))]" for b in tag.blocks],
+        ", ",
     )
     print(
         io,
