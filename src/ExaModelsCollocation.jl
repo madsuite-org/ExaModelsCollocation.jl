@@ -1,12 +1,7 @@
 """
     ExaModelsCollocation
 
-Collocation-aware helpers layered over ExaModels.jl.
-
-Each `add_*_collocation` helper mirrors its `ExaModels.add_*` counterpart, adding only what
-collocation requires: the residual form of the [`CollocationExaCore`](@ref)'s
-`CollocationMode`, the basis-polynomial sum as a constraint augmentation, and iteration over
-the interpolation points. The caller assembles the model directly.
+Helper functions for implementing orthogonal collocation in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl).
 """
 module ExaModelsCollocation
 

@@ -5,7 +5,7 @@
     CollocationVariable
 
 A variable block over the collocation mesh, from [`add_var_collocation`](@ref). Indexes like
-an `ExaModels.Variable`: `z[v, c, i, k]`.
+an `ExaModels.Variable`: `z[v, c, i, k]`, or `z[i, k]` when no dimensions were declared.
 
 # Fields
 - `dims`   : declared dimensions, the shape at one collocation point
@@ -33,7 +33,7 @@ function Base.show(io::IO, z::CollocationVariable)
         """
         CollocationVariable
 
-          $(z.name)[$(join(z.dims, ", ")), i, k] ∈ R^{$(join(ExaModels.size(z.size), " × "))}, k = $(z.krange)
+          $(z.name)[$(join((z.dims..., "i", "k"), ", "))] ∈ R^{$(join(ExaModels.size(z.size), " × "))}, k = $(z.krange)
         """,
     )
 end

@@ -285,9 +285,9 @@ function _block_layout(c::CollocationExaCore, z, who::Symbol)
     ))
 
     nlead = _nleading(z)
-    1 <= nlead <= 2 || throw(ArgumentError(
+    0 <= nlead <= 2 || throw(ArgumentError(
         "$who: that block declares $nlead leading dimensions; the add_con_* helpers handle " *
-        "one or two."
+        "up to two."
     ))
     return nlead, K
 end

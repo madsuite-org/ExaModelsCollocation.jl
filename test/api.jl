@@ -206,8 +206,8 @@ end
 # index leads, the mesh entries trail. t rides in the row only on a numeric mesh -- a
 # parameter block is a graph node, and one of those cannot ride in an iterator tuple.
 mesh_rows(core, vs) = core.adaptive ?
-    vec([(v, i, k) for v in vs, i in 1:core.N, k in 1:core.K]) :
-    vec([(v, i, k, core.mesh.t[i, k]) for v in vs, i in 1:core.N, k in 1:core.K])
+    [(v, i, k) for v in vs, i in 1:core.N, k in 1:core.K] :
+    [(v, i, k, core.mesh.t[i, k]) for v in vs, i in 1:core.N, k in 1:core.K]
 
 # Build and solve the decay problem. Two components share one right-hand side, so v goes in
 # the iterator and one call covers both.
@@ -433,6 +433,37 @@ end
     @test z.krange == 0:K
 end
 
+@testset "no leading dimensions" begin
+    # A block declared with no dimensions is a scalar state, z[i,k], so its rows carry no
+    # slot at all and every stencil takes its shortest branch. Pinned against the same
+    # problem as a one-component block rather than against a tolerance: the two are the same
+    # discretization of the same equation, so they must agree to solver tolerance.
+    N, K = 5, 3
+
+    @testset "$(nameof(typeof(b)))" for b in (StateForm(), DerivativeForm())
+        core = CollocationExaCore(range(0.0, TF; length = N + 1), K; basis = b)
+        @add_var_collocation(core, z)
+        @test ExaModelsCollocation._nleading(z) == 0
+
+        mesh_t = core.mesh.t
+        itr = [(i, k, mesh_t[i, k]) for i in 1:N, k in 1:K]
+        @test length(first(itr)) == 3                             # (i, k, t)
+        @add_con_collocation(core, coll, z, -z[i, k] for (i, k, t) in itr)
+        @add_con_continuity(core, cont, z)
+        ExaModels.@add_con(core, ic, z[1, 0] - 1.0 for _ in 1:1)
+
+        @test core.ncon == N * K + (N - 1) + 1
+        result = madnlp(ExaModels.ExaModel(core); print_level = MadNLP.ERROR, tol = 1e-12)
+        @test result.status == MadNLP.SOLVE_SUCCEEDED
+
+        # component 1 of the one-dimensional block carries the same z(0) = 1
+        _, ref = solve_decay(b, GaussRadau(), N, K)
+        zsol = ExaModels.solution(result, z)
+        @test size(zsol) == (N, K + 1)
+        @test zsol ≈ ref[1, :, :] rtol = 1e-8
+    end
+end
+
 @testset "two leading dimensions" begin
     # The stencils have a branch per leading-dimension count, and one call covers every slot.
     N, K, Nz, Nc = 5, 3, 2, 3
@@ -440,7 +471,7 @@ end
     @add_var_collocation(core, z, 1:Nz, 1:Nc)
 
     mesh_t = core.mesh.t
-    itr = vec([(v, c, i, k, mesh_t[i, k]) for v in 1:Nz, c in 1:Nc, i in 1:N, k in 1:K])
+    itr = [(v, c, i, k, mesh_t[i, k]) for v in 1:Nz, c in 1:Nc, i in 1:N, k in 1:K]
     @test length(first(itr)) == 5                                 # (v, c, i, k, t)
     @add_con_collocation(core, coll, z, -z[v, c, i, k] for (v, c, i, k, t) in itr)
     @add_con_continuity(core, cont, z)

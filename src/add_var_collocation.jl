@@ -1,11 +1,11 @@
-# ExaModels.add_var with the two mesh axes appended.
-
+# ExaModels.add_var with the two mesh axes i=1,...,N, k=0/1,...,K appended.
 """
     add_var_collocation(core, dims...; include_boundary = true, name = nothing, kwargs...)
 
 Adds variables with dimensions `dims` over the collocation mesh of `core`. `dims` is the
 shape at a single collocation point; the interval index over `1:N` and the collocation index
-over `krange` are appended. Returns `(core, CollocationVariable)`.
+over `krange` are appended. Passing none gives a scalar state, `z[i,k]`. Returns
+`(core, CollocationVariable)`.
 
 ## Keyword Arguments
 - `include_boundary` : `true` (default) gives `k = 0,…,K`, carrying the interval-left boundary node that continuity needs; `false` gives `k = 1,…,K`.

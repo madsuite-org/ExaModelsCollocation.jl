@@ -86,29 +86,36 @@ function _covered_slots(res, z, who::Symbol)
     slots = Any[]
     for r in res, s in r.slots
         s in slots && throw(ArgumentError(
-            "$who: two collocation calls cover z$(collect(s)), so its junction row would " *
+            "$who: two collocation calls cover $(_slotstr(s)), so its junction row would " *
             "integrate both right-hand sides"
         ))
         push!(slots, s)
     end
 
+    # A block declared with no dimensions is one slot, the empty tuple, so this covers it too.
     missing = [s for s in Iterators.product(z.dims...) if !(s in slots)]
     isempty(missing) || throw(ArgumentError(
         "$who: no add_con_collocation call covers " *
-        join(("z$(collect(s))" for s in Iterators.take(missing, 3)), ", ") *
+        join((_slotstr(s) for s in Iterators.take(missing, 3)), ", ") *
         (length(missing) > 3 ? ", …" : "") *
         ". Collocate every slot of the block first, or declare the rest as their own block."
     ))
     return slots
 end
 
+_slotstr(s) = isempty(s) ? "the block" : "z[$(join(s, ", "))]"
+
 # -z[zdims..., i+1, 0], off a junction row (zdims..., i); the b-sum rides on the stencil
-_continuity_base(z, nlead) = nlead == 1 ?
+_continuity_base(z, nlead) = nlead == 0 ?
+    (r -> -z[r[1] + 1, 0]) :
+    nlead == 1 ?
     (r -> -z[r[1], r[2] + 1, 0]) :
     (r -> -z[r[1], r[2], r[3] + 1, 0])
 
 # z[zdims..., i+1, 0] - z[zdims..., i, 0], off a junction row (zdims..., i)
-_junction_base(z, nlead) = nlead == 1 ?
+_junction_base(z, nlead) = nlead == 0 ?
+    (r -> z[r[1] + 1, 0] - z[r[1], 0]) :
+    nlead == 1 ?
     (r -> z[r[1], r[2] + 1, 0] - z[r[1], r[2], 0]) :
     (r -> z[r[1], r[2], r[3] + 1, 0] - z[r[1], r[2], r[3], 0])
 

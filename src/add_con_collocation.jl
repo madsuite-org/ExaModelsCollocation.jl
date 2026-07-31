@@ -44,8 +44,8 @@ function _row_layout(itr, nlead, nmesh, who::Symbol)
     len = length(first(itr))
     len >= nlead + nmesh || throw(ArgumentError(
         "$who: that block carries $nlead leading dimensions, so the iterator rows read " *
-        "($(nlead == 1 ? "v" : "v, c"), …, i, k$(nmesh == 3 ? ", t" : "")); the ones given " *
-        "carry $len entries."
+        "($(("", "v, ", "v, c, ")[nlead + 1])…, i, k$(nmesh == 3 ? ", t" : "")); the ones " *
+        "given carry $len entries."
     ))
     return RowLayout(len, nlead, len - nmesh + 1, len - nmesh + 2)
 end
@@ -66,7 +66,8 @@ the generator body the way ExaModels iterators normally are:
     (z's own indices…, anything else f varies with…, i, k, t)
 
 The leading indices are the slot of `z` that row constrains, so an index held fixed is
-written as a literal. `i` and `k` run over the intervals and collocation points, and `t` is
+written as a literal; a block declared with no dimensions has no slot, and its rows start at
+`i`. `i` and `k` run over the intervals and collocation points, and `t` is
 the collocation time `core.mesh.t[i,k]`, carried in the tuple because a traced index reads
 it off the tuple rather than out of a plain array; leave it unused if `f` is autonomous. On
 an adaptive mesh `t` is a parameter block, and a graph node cannot ride in an iterator tuple,
@@ -165,14 +166,19 @@ function add_con_collocation(
     return core, con
 end
 
-# The two stencils that index z, one per leading-dimension count _block_layout admits.
+# The stencils that index z, one per leading-dimension count _block_layout admits. A block
+# declared with no dimensions is z[i,k], so its rows carry no slot at all.
 # n => a * z[slot..., i, j], off a row (n, a, slot..., i, j)
-_state_stencil(z, nlead) = nlead == 1 ?
+_state_stencil(z, nlead) = nlead == 0 ?
+    (s -> s[1] => s[2] * z[s[3], s[4]]) :
+    nlead == 1 ?
     (s -> s[1] => s[2] * z[s[3], s[4], s[5]]) :
     (s -> s[1] => s[2] * z[s[3], s[4], s[5], s[6]])
 
 # z[slot..., i, k] - z[slot..., i, 0], off a row (slot..., i, k)
-_derivative_base(z, nlead) = nlead == 1 ?
+_derivative_base(z, nlead) = nlead == 0 ?
+    (r -> z[r[1], r[2]] - z[r[1], 0]) :
+    nlead == 1 ?
     (r -> z[r[1], r[2], r[3]] - z[r[1], r[2], 0]) :
     (r -> z[r[1], r[2], r[3], r[4]] - z[r[1], r[2], r[3], 0])
 

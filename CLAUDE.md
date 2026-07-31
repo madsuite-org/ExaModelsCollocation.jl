@@ -110,10 +110,11 @@ residual depends on belongs in the function.
 
 - `add_var_collocation` — `ExaModels.add_var` with the two mesh axes appended. The caller
   declares the **per-timepoint** shape; `z[v,c]` declared becomes `z[v,c,i,k]` allocated,
-  `i = 1,…,N` and `k` over `krange`. `include_boundary = true` (default) gives `k = 0,…,K`,
-  carrying the interval-left boundary node continuity needs; `false` gives `k = 1,…,K`.
-  Pass-through keywords (`start`, `lvar`, `uvar`, `tag`) are shaped to the **allocated**
-  block, not the declared one.
+  `i = 1,…,N` and `k` over `krange`. Declaring none gives a scalar state, `z[i,k]`, the way
+  `add_var(core)` gives a scalar variable. `include_boundary = true` (default) gives
+  `k = 0,…,K`, carrying the interval-left boundary node continuity needs; `false` gives
+  `k = 1,…,K`. Pass-through keywords (`start`, `lvar`, `uvar`, `tag`) are shaped to the
+  **allocated** block, not the declared one.
 - `add_con_collocation` — `ExaModels.add_con` plus exactly three things: the expression is
   put into the residual form of `core.mode`, the basis-polynomial sum is attached as an
   `add_con!` augmentation, and the iterator runs over the collocation points. Nothing else.
@@ -157,18 +158,27 @@ this exact pattern; read them before changing a helper.
    away with `(i,k,cidx) =>` because all its ranges start at 1, so value == position. Here a
    row's leading indices may name a restricted slice (`2:2`) where they diverge, so base
    iterators are `vec`'d flat and the augmentation is keyed by linear position. Getting this
-   wrong yields an INFEASIBLE model, not an error.
+   wrong yields an INFEASIBLE model, not an error. **The helper does that flattening** —
+   `_flat` on the way in — so a caller hands over whatever shape the comprehension made and
+   never writes `vec` itself. The tests are written that way; keep them that way.
 5. **One `add_con` call per structurally distinct algebraic expression, and no more.** This
    is the whole point of ExaModels: everything that merely *varies* goes in the iterator,
-   including the value a constraint equals. Van der Pol's three state equations genuinely
-   differ, so they need three calls; its three initial conditions collapse to two (numeric
-   vs. `p`-linked). PEtab groups the same way in `_create_initial_conditions`.
+   including the value a constraint equals. Bruno's seven species equations are four
+   structurally distinct expressions, so they need four calls; its forty-two initial
+   conditions collapse to two (numeric vs. `p`-linked). PEtab groups the same way in
+   `_create_initial_conditions`. **A block is what sets the floor**: one call cannot span
+   two blocks, so splitting the state costs a call per block on everything that was uniform
+   across it — which is why Van der Pol, one block per state, writes three initial
+   conditions where one shape would have done.
 6. **The stencil lives in the function; the macro adds nothing to it.** `add_con_*` takes the
    variable and a generator whose rows read
    `(z's own indices…, whatever else f varies with…, i, k, t)`, and indexes `z` straight off
    the leading entries — a literal there holds that dimension at one value, a name bound by
    the iterator varies with it. `RowLayout` locates the slot and the mesh entries by counting
-   from both ends, so the middle is the caller's to order. `@add_con_*` takes the same
+   from both ends, so the middle is the caller's to order. `_block_layout` admits **zero to
+   two** leading dimensions and every stencil has a branch per count; a block with none has
+   no slot at all, so its rows start at `i` and its one slot is the empty tuple, which is
+   what `Iterators.product()` already yields in `_covered_slots`. `@add_con_*` takes the same
    arguments and only rebinds `core` and writes the name bare, so the two forms cannot drift.
    Keep the lookup by handle identity rather than a `Symbol`. The caller builds the iterator:
    a product helper cannot express a row like `(v, l[v], i, k, t)` whose later entries depend
@@ -307,20 +317,28 @@ way: on the same nodes, `adaptive = true` must reproduce the numeric mesh's solu
 merely come close; after a `set_nodes!`, the model must match one rebuilt on those nodes from
 scratch. That second one is what catches `h` moving without `t`.
 
-`test/vanderpol.jl` covers the helpers end to end on the optimal control problem.
+**The two whole models are deliberately opposite in how they declare the state, and that is
+the point** — the helpers impose no shape, so both spellings have to keep working.
+
+`test/vanderpol.jl` covers the helpers end to end on the optimal control problem, with **one
+block per state**: `z1`, `z2`, `z3` and `u` are declared with no dimensions at all, so they
+are `z1[i,k]`, and each takes its own `@add_con_collocation` and `@add_con_continuity`. It is
+what covers the zero-leading-dimension branch of every stencil outside `api.jl`, and what
+shows the cost of splitting: three states that share an initial-condition shape still need
+three `@add_con` calls, because a call cannot span two blocks.
 
 `test/bruno.jl` does the same for parameter estimation, on the PEtab Benchmark Collection's
-`Bruno_JExpBot2016`. It is the regression test for two things nothing else covers: `start` on
+`Bruno_JExpBot2016`, with **one block for everything**: all seven species are `z[v,c,i,k]`.
+It is the regression test for two things nothing else covers: `start` on
 `add_var_collocation` (the state profile is initialized by integrating at the starting
 parameters), and grouping — seven species obey four structurally distinct expressions, so the
-state is declared as four blocks, one per expression, each taking a single
-`@add_con_collocation` and a single `@add_con_continuity`. Note what that costs: the initial
-conditions and the objective *are* uniform across all seven species, so splitting the state
-turns each of them into one call per block. The terms of the `z3` and `z4` equations are
-ordered so that term `j` always draws from one block, which is what keeps those to one call
-each. Its objective is checked against the negative log-likelihood PEtab.jl reports at the
-collection's nominal parameters, `-46.68818145`, to `atol = 1e-6`; that single assertion
-covers the whole discretization, so do not loosen it to make an unrelated change pass.
+block takes four `@add_con_collocation` calls over disjoint slots and a single
+`@add_con_continuity` that reads its slots off all four records. That is the multi-residual
+path through `_covered_slots`, which nothing else exercises. Because it is one block, the
+initial conditions collapse to two calls and the objective to one. Its objective is checked
+against the negative log-likelihood PEtab.jl reports at the collection's nominal parameters,
+`-46.68818145`, to `atol = 1e-6`; that single assertion covers the whole discretization, so do
+not loosen it to make an unrelated change pass.
 
 `ExaModels.solution(result, z)` returns a plain 1-based array, so a block indexed `k = 0,…,K`
 lands on `1,…,K+1` there.
