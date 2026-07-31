@@ -1,100 +1,94 @@
-# Collocation-aware wrapper around ExaModels.add_var.
-# The caller declares the per-timepoint shape; the mesh indices (i, k) are appended.
+# ExaModels.add_var with the two mesh axes appended.
 
 """
-    add_var_collocation(core, dae, dims...; include_boundary = true, name = nothing, kwargs...)
+    add_var_collocation(core, dims...; include_boundary = true, name = nothing, kwargs...)
 
-Add a variable block laid out over the collocation mesh. A block declared with
-per-timepoint dimensions `dims` is allocated with the interval index `i` and the
-collocation index `k` appended, so
+Adds variables with dimensions `dims` over the collocation mesh of `core`. `dims` is the
+shape at a single collocation point; the interval index over `1:N` and the collocation index
+over `krange` are appended. Returns `(core, CollocationVariable)`.
 
+## Keyword Arguments
+- `include_boundary` : `true` (default) gives `k = 0,…,K`, carrying the interval-left boundary node that continuity needs; `false` gives `k = 1,…,K`.
+- `name` : when given as `Val(:name)`, registers the variable in `core` for later retrieval as `core.name` or `model.name`. See [`@add_var_collocation`](@ref) for the idiomatic named interface.
+- Remaining keyword arguments are passed on to `ExaModels.add_var`. `start`, `lvar`, `uvar` and `tag` are shaped to the **allocated** block, `(dims..., 1:N, krange)`.
+
+## Example
 ```julia
-core, z = add_var_collocation(core, dae, 1:nz, 1:Nc)   #  z[v, c, i, k]
+julia> core = CollocationExaCore(range(0.0, 5.0; length = 21), 3);
+
+julia> core, z = add_var_collocation(core, 1:3, 1:2);   # z[v,c,i,k], 3 × 2 × N × (K+1)
+
+julia> core, u = add_var_collocation(core, 1:1, 1:2; include_boundary = false);   # k = 1,…,K
 ```
-
-creates `nz × Nc × N × (K+1)` variables, where `N` and `K` come from `dae`.
-
-`include_boundary` selects the collocation index range: `true` (the default) gives
-`k = 0,…,K`, carrying the interval-left boundary node needed for continuity; `false` gives
-`k = 1,…,K`, the collocation points alone.
-
-Keyword arguments pass through to `ExaModels.add_var` and mean exactly what they do there —
-including `name`, which registers the handle when given as `Val(:name)`. `start`, `lvar`,
-`uvar`, and `tag` must be shaped to the **allocated** block, i.e. `(dims..., 1:N, krange)`.
-
-Returns `(core, var)`, as `add_var` does. `dae` is mutable and is updated in place: the
-block's layout is recorded either way and reachable with [`block`](@ref); a named handle is
-additionally reachable as `dae.<name>`.
-
-See [`@add_var_collocation`](@ref) for the form that names and binds it for you.
 """
 function add_var_collocation(
-        core::ExaCore,
-        dae::DAEta,
+        core::CollocationExaCore,
         dims...;
         include_boundary::Bool = true,
         name = nothing,
         kwargs...,
     )
-    _require_mesh(dae, :add_var_collocation)
-
-    K = _degree(dae)
+    K = _degree(core)
     krange = include_boundary ? (0:K) : (1:K)
 
     core, var = ExaModels.add_var(
-        core, dims..., 1:_nintervals(dae), krange;
+        core, dims..., 1:_nintervals(core), krange;
         name = name, kwargs...,
     )
 
-    push!(getfield(dae, :blocks), VarBlock(var, dims, krange))
-    name === nothing || _register!(dae, :vars, _name_of(name), var)
-    return core, var
+    z = CollocationVariable(var, dims, krange)
+    return _addblock(_rehandle(core, var, z, name), z), z
 end
 
-_name_of(::Val{N}) where {N} = N
-
 """
-    @add_var_collocation(core, dae, name, dims...; kwargs...)
+    @add_var_collocation(core, [name,] dims...; kwargs...)
 
-Macro interface for [`add_var_collocation`](@ref), relating to it exactly as
-`ExaModels.@add_var` relates to `add_var`: `name` is written bare, becomes the `name = Val(…)`
-keyword, and is bound in the calling scope. `core` is updated there too; `dae` is mutated in
-place.
+Macro interface for [`add_var_collocation`](@ref). Updates `core` in the calling scope.
 
+- **Named** (`@add_var_collocation(core, z, dims...)`): binds `z` to the new
+  `CollocationVariable` in the local scope and registers it in `core` for later retrieval as
+  `core.z` or `model.z`.
+- **Anonymous** (`@add_var_collocation(core, dims...)`): equivalent to
+  `core, z = add_var_collocation(core, dims...)`.
+
+Accepts the same keyword arguments as [`add_var_collocation`](@ref).
+
+## Example
 ```julia
-dae = DAEta(nodes, K)
-@add_var_collocation(core, dae, z, 1:nz, 1:Nc)                        # z[v,c,i,k], k = 0,…,K
-@add_var_collocation(core, dae, u, 1:nu, 1:Nc; include_boundary = false)  # u[v,c,i,k], k = 1,…,K
+core = CollocationExaCore(range(0.0, 5.0; length = 21), 3)
+@add_var_collocation(core, z, 1:3, 1:2)                            # z[v,c,i,k], k = 0,…,K
+@add_var_collocation(core, u, 1:1, 1:2; include_boundary = false)  # u[v,c,i,k], k = 1,…,K
 ```
-
-`z` and `u` are now bound locally, and also reachable as `dae.z` and `dae.u`.
 """
 macro add_var_collocation(exs...)
     args, kwargs = _split_collocation_args(exs)
-    length(args) >= 3 ||
-        error("@add_var_collocation requires core, dae, and a name argument")
+    isempty(args) && error("@add_var_collocation requires a core argument")
 
-    core, dae, name = args[1], args[2], args[3]
-    name isa Symbol ||
-        error("@add_var_collocation: the third argument must be the variable name, got `$name`")
-    dims = args[4:end]
+    core = args[1]
+    named = length(args) >= 2 && args[2] isa Symbol
+    name = named ? args[2] : nothing
+    dims = args[(named ? 3 : 2):end]
     var = gensym(:var)
 
     return quote
         local $var
         $(esc(core)), $var = add_var_collocation(
             $(esc(core)),
-            $(esc(dae)),
             $(map(esc, dims)...);
-            name = $(Val(name)),
+            name = $(_name_val(name)),
             $(map(esc, kwargs)...),
         )
-        $(esc(name)) = $var
+        $(name === nothing ? var : :($(esc(name)) = $var))
+        $var
     end
 end
 
+# `name = Val(:z)` for a named macro call, `name = nothing` for an anonymous one
+_name_val(name::Symbol) = Val(name)
+_name_val(::Nothing) = nothing
+
 # Split macro arguments into positional and keyword parts, accepting both
-# `f(a, b; k = v)` (parameters block) and `f(a, b, k = v)` spellings.
+# `f(a, b; k = v)` and `f(a, b, k = v)` spellings.
 function _split_collocation_args(exs)
     args = Any[]
     kwargs = Any[]

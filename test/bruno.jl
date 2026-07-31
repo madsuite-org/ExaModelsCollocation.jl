@@ -16,8 +16,9 @@
 #     with a real integrator; a fixed-step RK4 is enough here. It is worth the trouble: on
 #     this model it takes the solve from 33 interior-point iterations to 4.
 #   * grouping. Seven species obey seven different equations, but only four of them are
-#     structurally distinct expressions, so the model needs four `@add_con_collocation`
-#     calls, not seven.
+#     structurally distinct expressions, so the state is declared as four blocks -- one per
+#     expression -- and each takes a single `@add_con_collocation` and a single
+#     `@add_con_continuity` call.
 
 using MadNLP
 
@@ -237,15 +238,32 @@ using MadNLP
         return z0
     end
 
+    # One variable block per structurally distinct right-hand side, so each takes exactly
+    # one collocation call and one continuity call. Species are indexed inside their block.
+    #   z1 : bcar, zea      consumed, one reaction each
+    #   z2 : bcry           consumed by two reactions at once
+    #   z3 : b10, ohb10     a source in z1, a source in z2, and a sink of their own
+    #   z4 : bio, ohbio     terminal products: one source per other block, no sink
+    Z1_BCAR, Z1_ZEA = 1, 2
+    Z2_BCRY = 1
+    Z3_B10, Z3_OHB10 = 1, 2
+    Z4_BIO, Z4_OHBIO = 1, 2
+
+    # species index -> (its block, its index within that block)
+    blockof = Dict(BCAR => (1, Z1_BCAR), ZEA => (1, Z1_ZEA), BCRY => (2, Z2_BCRY),
+                   B10 => (3, Z3_B10), OHB10 => (3, Z3_OHB10),
+                   BIO => (4, Z4_BIO), OHBIO => (4, Z4_OHBIO))
+    blocksize = (2, 1, 2, 2)
+    inblock(b, rows) = [(blockof[r[1]][2], Base.tail(r)...) for r in rows if blockof[r[1]][1] == b]
+
     # ------------------------------------------------------------------------ build ----
     function build(θ0 = θnom)
-        dae = DAEta(nodes, K)
-        core = ExaModels.ExaCore(; concrete = Val(true))
+        core = CollocationExaCore(nodes, K)
 
         # Sample times of the allocated block, in its own (i, k) order: k = 0 is the
         # interval boundary, k = 1,...,K the collocation points.
         ik = [(i, k) for i in 1:N for k in 0:K]
-        ts = [k == 0 ? dae.nodes[i] : dae.mesh.t[i, k] for (i, k) in ik]
+        ts = [k == 0 ? core.nodes[i] : core.mesh.t[i, k] for (i, k) in ik]
 
         a0, z0 = rates(θ0), state0(θ0)
         zstart = Array{Float64}(undef, Nz, Nc, N, K + 1)
@@ -257,8 +275,16 @@ using MadNLP
         end
 
         # `start` is shaped to the allocated block, (dims..., 1:N, krange) -- not to the
-        # per-timepoint shape that was declared.
-        @add_var_collocation(core, dae, z, 1:Nz, 1:Nc; start = zstart)
+        # per-timepoint shape that was declared. Split it the way the species were.
+        starts = [Array{Float64}(undef, n, Nc, N, K + 1) for n in blocksize]
+        for (v, (b, loc)) in blockof
+            starts[b][loc, :, :, :] = zstart[v, :, :, :]
+        end
+
+        @add_var_collocation(core, z1, 1:blocksize[1], 1:Nc; start = starts[1])
+        @add_var_collocation(core, z2, 1:blocksize[2], 1:Nc; start = starts[2])
+        @add_var_collocation(core, z3, 1:blocksize[3], 1:Nc; start = starts[3])
+        @add_var_collocation(core, z4, 1:blocksize[4], 1:Nc; start = starts[4])
         ExaModels.@add_var(core, p, 1:Np; lvar = θLB, uvar = θUB, start = θ0)
 
         # The condition table multiplies each rate constant by 0, 1, or szea. Folding that
@@ -273,42 +299,59 @@ using MadNLP
         ExaModels.@add_con(core, rate_scaled, a[r, c] - exp(log(10.0) * (p[m] + p[SZEA]))
             for (r, c, m) in [(r, c, KP[r]) for r in 1:6, c in 1:Nc if mult[c, r] === sc])
 
-        # Seven species equations, four distinct expressions. Which species an equation is
-        # for, and which rates and reactants it draws on, all merely vary -- so they ride in
-        # the iterator, and the leading index of the state slice varies with them.
-        mesh_t = dae.mesh.t
-        sweep(rows) = vec([(row..., c, i, k, mesh_t[i, k])
+        # Seven species equations, four distinct expressions, one per block. Which species
+        # an equation is for, and which rates and reactants it draws on, all merely vary --
+        # so they ride in the iterator. The terms are grouped so that term j always draws
+        # from one block, which is what keeps each of these to a single call.
+        # z[v,c] is the slot a row constrains, so the species index leads and the condition
+        # follows it; everything the expression merely draws on trails behind.
+        mesh_t = core.mesh.t
+        sweep(rows) = vec([(first(row), c, Base.tail(row)..., i, k, mesh_t[i, k])
                            for row in rows, c in 1:Nc, i in 1:N, k in 1:K])
 
         # bcar and zea are consumed and never produced
-        @add_con_collocation(core, dae, coll_decay1, z[v, c],
-            -a[r, c] * z[v, c, i, k]
-            for (v, r, c, i, k, t) in sweep([(BCAR, KB1), (ZEA, K5)]))
+        @add_con_collocation(core, coll_decay1, z1,
+            -a[r, c] * z1[v, c, i, k]
+            for (v, c, r, i, k, t) in sweep([(Z1_BCAR, KB1), (Z1_ZEA, K5)]))
 
         # bcry is consumed by two reactions at once
-        @add_con_collocation(core, dae, coll_decay2, z[v, c],
-            -(a[r1, c] + a[r2, c]) * z[v, c, i, k]
-            for (v, r1, r2, c, i, k, t) in sweep([(BCRY, KC1, KC2)]))
+        @add_con_collocation(core, coll_decay2, z2,
+            -(a[r1, c] + a[r2, c]) * z2[v, c, i, k]
+            for (v, c, r1, r2, i, k, t) in sweep([(Z2_BCRY, KC1, KC2)]))
 
-        # b10 and ohb10: two sources, and consumed by a reaction of their own
-        @add_con_collocation(core, dae, coll_flow, z[v, c],
-            a[r1, c] * z[v1, c, i, k] + a[r2, c] * z[v2, c, i, k] - a[r3, c] * z[v, c, i, k]
-            for (v, r1, v1, r2, v2, r3, c, i, k, t) in sweep([
-                (B10, KB1, BCAR, KC1, BCRY, KB2), (OHB10, KC2, BCRY, K5, ZEA, KC4)]))
+        # b10 and ohb10: a source in z1, a source in z2, and a sink of their own
+        @add_con_collocation(core, coll_flow, z3,
+            a[r1, c] * z1[v1, c, i, k] + a[r2, c] * z2[v2, c, i, k] - a[r3, c] * z3[v, c, i, k]
+            for (v, c, r1, v1, r2, v2, r3, i, k, t) in sweep([
+                (Z3_B10,   KB1, Z1_BCAR, KC1, Z2_BCRY, KB2),
+                (Z3_OHB10, K5,  Z1_ZEA,  KC2, Z2_BCRY, KC4)]))
 
         # bio and ohbio are terminal products: three sources, no sink
-        @add_con_collocation(core, dae, coll_sink, z[v, c],
-            a[r1, c] * z[v1, c, i, k] + a[r2, c] * z[v2, c, i, k] + a[r3, c] * z[v3, c, i, k]
-            for (v, r1, v1, r2, v2, r3, v3, c, i, k, t) in sweep([
-                (BIO, KB1, BCAR, KB2, B10, KC2, BCRY),
-                (OHBIO, KC1, BCRY, KC4, OHB10, K5, ZEA)]))
+        @add_con_collocation(core, coll_sink, z4,
+            a[r1, c] * z1[v1, c, i, k] + a[r2, c] * z3[v2, c, i, k] + a[r3, c] * z2[v3, c, i, k]
+            for (v, c, r1, v1, r2, v2, r3, v3, i, k, t) in sweep([
+                (Z4_BIO,   KB1, Z1_BCAR, KB2, Z3_B10,   KC2, Z2_BCRY),
+                (Z4_OHBIO, K5,  Z1_ZEA,  KC4, Z3_OHB10, KC1, Z2_BCRY)]))
 
-        @add_con_continuity(core, dae, cont,
-            z[v, c] for (v, c) in continuity_itr(dae, 1:Nz, 1:Nc))
+        @add_con_continuity(core, cont1, z1)
+        @add_con_continuity(core, cont2, z2)
+        @add_con_continuity(core, cont3, z3)
+        @add_con_continuity(core, cont4, z4)
 
-        ExaModels.@add_con(core, ic_zero, z[v, c, 1, 0] for (v, c) in ic_0)
-        ExaModels.@add_con(core, ic_par, z[v, c, 1, 0] - exp(log(10.0) * p[m])
-            for (v, c, m) in ic_p)
+        # Splitting the state is what costs here: the initial conditions and the objective
+        # below are one expression across all seven species, so they need one call per block
+        # rather than one call each.
+        ExaModels.@add_con(core, ic_zero1, z1[v, c, 1, 0] for (v, c) in inblock(1, ic_0))
+        ExaModels.@add_con(core, ic_zero2, z2[v, c, 1, 0] for (v, c) in inblock(2, ic_0))
+        ExaModels.@add_con(core, ic_zero3, z3[v, c, 1, 0] for (v, c) in inblock(3, ic_0))
+        ExaModels.@add_con(core, ic_zero4, z4[v, c, 1, 0] for (v, c) in inblock(4, ic_0))
+
+        ExaModels.@add_con(core, ic_par1, z1[v, c, 1, 0] - exp(log(10.0) * p[m])
+            for (v, c, m) in inblock(1, ic_p))
+        ExaModels.@add_con(core, ic_par2, z2[v, c, 1, 0] - exp(log(10.0) * p[m])
+            for (v, c, m) in inblock(2, ic_p))
+        ExaModels.@add_con(core, ic_par3, z3[v, c, 1, 0] - exp(log(10.0) * p[m])
+            for (v, c, m) in inblock(3, ic_p))
 
         # Gaussian negative log-likelihood. sigma is known per measurement, so each term is
         # 0.5((y - ymeas)/sigma)^2 + log(sigma) + 0.5log(2pi) with the tail a constant;
@@ -318,18 +361,23 @@ using MadNLP
         # of interval i and a measurement at t = nodes[m] is read off interval m-1. Nothing
         # to interpolate, and the last measurement is not a special case even though it
         # falls on the far end of the horizon. Legendre would need the tau = 1 weights
-        # `dae.weights.b` here instead, since none of its points lands on the boundary.
+        # `core.weights.b` here instead, since none of its points lands on the boundary.
         itr_obj = Tuple{Int, Int, Int, Float64, Float64, Float64}[]
         for (v, c, tbl) in meas, row in axes(tbl, 1)
             tm, ym, sd = tbl[row, 1], tbl[row, 2], tbl[row, 3]
-            m = findfirst(n -> isapprox(n, tm; atol = 1e-9), dae.nodes)
+            m = findfirst(n -> isapprox(n, tm; atol = 1e-9), core.nodes)
             m > 1 || error("measurement at t = $tm is not on an interval's right end")
             push!(itr_obj, (v, c, m - 1, ym, sd, log(sd) + 0.5 * log(2π)))
         end
-        ExaModels.@add_obj(core, 0.5 * ((z[v, c, i, K] - ym) / sd)^2 + cst
-            for (v, c, i, ym, sd, cst) in itr_obj)
+        # bio and ohbio are never observed, so only three blocks carry measurements
+        ExaModels.@add_obj(core, 0.5 * ((z1[v, c, i, K] - ym) / sd)^2 + cst
+            for (v, c, i, ym, sd, cst) in inblock(1, itr_obj))
+        ExaModels.@add_obj(core, 0.5 * ((z2[v, c, i, K] - ym) / sd)^2 + cst
+            for (v, c, i, ym, sd, cst) in inblock(2, itr_obj))
+        ExaModels.@add_obj(core, 0.5 * ((z3[v, c, i, K] - ym) / sd)^2 + cst
+            for (v, c, i, ym, sd, cst) in inblock(3, itr_obj))
 
-        return core, dae, z, p, a
+        return core, (z1, z2, z3, z4), p, a
     end
 
     # The negative log-likelihood PEtab.jl and ExaModelsPEtab.jl both report for this model
@@ -337,10 +385,12 @@ using MadNLP
     NLL_REF = -46.68818145
 
     @testset "from the nominal parameters" begin
-        core, dae, z, p, a = build()
+        core, (z1, z2, z3, z4), p, a = build()
 
-        @test dae.N == N == 13
-        @test size(dae.mesh.t) == (N, K)
+        @test core.N == N == 13
+        @test size(core.mesh.t) == (N, K)
+        # the four blocks hold the same seven species between them
+        @test sum(b -> length(b.dims[1]), core.blocks) == Nz
         @test core.nvar == Nz * Nc * N * (K + 1) + Np + 6 * Nc
         @test Nm == 77
 
@@ -352,19 +402,20 @@ using MadNLP
         @test result.objective ≈ NLL_REF atol = 1e-6
         @test 10 .^ ExaModels.solution(result, p) ≈ pnom rtol = 1e-4
 
-        zsol = ExaModels.solution(result, z)      # 1-based, so k = 0,...,K lands on 1,...,K+1
+        # 1-based, so k = 0,...,K lands on 1,...,K+1
+        sols = map(b -> ExaModels.solution(result, b), (z1, z2, z3, z4))
         θ = ExaModels.solution(result, p)
 
         # Initial conditions honored, on both branches
-        @test zsol[BCAR, 2, 1, 1] ≈ 10.0^θ[INIT_BCAR1] rtol = 1e-8
-        @test zsol[ZEA, 6, 1, 1] ≈ 10.0^θ[INIT_ZEA] rtol = 1e-8
-        @test zsol[BIO, 1, 1, 1] ≈ 0.0 atol = 1e-8
+        @test sols[1][Z1_BCAR, 2, 1, 1] ≈ 10.0^θ[INIT_BCAR1] rtol = 1e-8
+        @test sols[1][Z1_ZEA, 6, 1, 1] ≈ 10.0^θ[INIT_ZEA] rtol = 1e-8
+        @test sols[4][Z4_BIO, 1, 1, 1] ≈ 0.0 atol = 1e-8
 
         # Every species is a concentration, and the three that are only ever consumed decay
         # monotonically -- neither is imposed anywhere, so both are the discretization's own
-        @test all(zsol .>= -1e-6)
-        @test all(diff(vec(zsol[BCAR, 2, :, K + 1])) .<= 1e-8)
-        @test all(diff(vec(zsol[ZEA, 6, :, K + 1])) .<= 1e-8)
+        @test all(all(s .>= -1e-6) for s in sols)
+        @test all(diff(vec(sols[1][Z1_BCAR, 2, :, K + 1])) .<= 1e-8)
+        @test all(diff(vec(sols[1][Z1_ZEA, 6, :, K + 1])) .<= 1e-8)
 
         # Rates switched off in the condition table stay off, and condition 3 scales by szea
         asol = ExaModels.solution(result, a)
@@ -373,8 +424,8 @@ using MadNLP
 
         # Radau's tau = 1 point is the interval boundary, so the continuity weights select it
         # and z[...,N,K] is the state at t = 180 with nothing to evaluate
-        @test dae.weights.b ≈ [zeros(K); 1.0]
-        @test zsol[BCAR, 2, N, K + 1] < zsol[BCAR, 2, 1, 1]
+        @test core.weights.b ≈ [zeros(K); 1.0]
+        @test sols[1][Z1_BCAR, 2, N, K + 1] < sols[1][Z1_BCAR, 2, 1, 1]
     end
 
     @testset "from a perturbed start" begin
@@ -382,7 +433,7 @@ using MadNLP
         # integrated from them -- is moved off the optimum, so the guess is doing real work
         # rather than handing the solver its own answer back. Same optimum, 8 iterations
         # instead of 72 from a flat state start.
-        core, _, _, p, _ = build(θnom .+ 0.3)
+        core, _, p, _ = build(θnom .+ 0.3)
 
         result = madnlp(ExaModels.ExaModel(core); print_level = MadNLP.ERROR)
         @test result.status == MadNLP.SOLVE_SUCCEEDED

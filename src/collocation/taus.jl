@@ -17,7 +17,7 @@ abstract type AbstractRoots end
     GaussRadau()
 
 Roots of the Gauss-Radau polynomial as collocation points. The default `roots` for
-[`DAEta`](@ref); `tau_K = 1`, so the last collocation point sits on the interval's right edge.
+[`CollocationExaCore`](@ref); `tau_K = 1`, so the last collocation point sits on the interval's right edge.
 """
 struct GaussRadau <: AbstractRoots end
 
@@ -35,7 +35,7 @@ Roots of the Gauss-Lobatto polynomial as collocation points.
 """
 struct GaussLobatto <: AbstractRoots end
 
-# K is validated in _set_mesh! before this is reached
+# K is validated in _set_mesh before this is reached
 function _get_taus(family::AbstractRoots, K::Integer)
     # Roots of the Gauss-Jacobi polynomial, from FastGaussQuadrature.jl
     roots = _get_roots(family, K) # in [-1, 1]

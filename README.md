@@ -108,7 +108,7 @@ add_con_collocation(core, z, generator; name = nothing, kwargs...)
 ```
 
 Adds the collocation constraints for the variable `z` to `core`, enforcing `dz/dt = f` at every
-collocation point of the mesh in `CollocationExaCore`. Returns `(core, CollocationConstraint)`.
+collocation point of the mesh in `CollocationExaCore`. Returns `(core, Constraint)`.
 
 ### Arguments
 - `z` : a `CollocationVariable` from `add_var_collocation`
@@ -169,7 +169,7 @@ add_con_continuity(core, z; name = nothing, kwargs...)
 ```
 
 Adds the continuity constraints for a `CollocationVariable` to `core`, enforcing each interval's terminal value
-to equal the value at the next interval's left boundary node, for `i = 1,…,N-1`. Returns `(core, CollocationConstraint)`.
+to equal the value at the next interval's left boundary node, for `i = 1,…,N-1`. Returns `(core, Constraint)`.
 
 ### Arguments
 - `z` : a `CollocationVariable` from `add_var_collocation`
@@ -192,7 +192,7 @@ julia> c, cont = add_con_continuity(c, z)
 ```
 
 Macro interface for `add_con_continuity`. Updates `core` in the calling scope.
-- **Named** (`@add_con_continuity(core, name, z)`): binds `name` to the new `CollocationConstraint`
+- **Named** (`@add_con_continuity(core, name, z)`): binds `name` to the new `Constraint`
   in the local scope and registers it in `core` for later retrieval as `core.name` or `model.name`.
 - **Anonymous** (`@add_con_continuity(core, z)`): equivalent to
   `c, name = add_con_continuity(c, z)`.

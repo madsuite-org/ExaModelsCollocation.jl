@@ -103,7 +103,7 @@ end
         r isa GaussLobatto && b isa StateForm && continue
 
         taus = C._get_taus(r, K)
-        w = C._get_weights(Lagrange(), b, taus)
+        w = C._get_weights(C.Lagrange(), b, taus)
 
         @test w isa C.BasisWeights
         @test w.taus === taus
@@ -123,10 +123,15 @@ end
         nodes = range(0.0, 1.0; length = 5)
 
         # GaussLobatto has a point on tau = 0, so it cannot carry StateForm's anchor
-        dae = @test_logs (:warn, r"GaussLobatto") DAEta(nodes, 3; roots = GaussLobatto())
-        @test dae.basis isa DerivativeForm
+        tag = @test_logs (:warn, r"GaussLobatto") Collocation(nodes, 3; roots = GaussLobatto())
+        @test tag.mode.basis isa DerivativeForm
 
-        @test_throws ArgumentError DAEta(nodes, 3; polynomial = NotAPolynomial())
+        @test_throws ArgumentError Collocation(nodes, 3; polynomial = NotAPolynomial())
+
+        # Collocation holds the validation, so the sugar cannot get around it
+        @test_throws ArgumentError CollocationExaCore([0.0], 3)
+        @test_throws ArgumentError CollocationExaCore(nodes, 0)
+        @test_throws ArgumentError CollocationExaCore([0.0, 2.0, 1.0], 3)
     end
 end
 
@@ -135,6 +140,7 @@ end
         taus = C._get_taus(GaussRadau(), 3)
         mesh = C._get_mesh(collect(range(0.0, 5.0; length = 21)), taus)
 
+        @test mesh.hpar === nothing && mesh.tpar === nothing   # numeric unless adaptive
         @test length(mesh.nodes) == 21
         @test length(mesh.h) == 20                    # N is intervals, not boundaries
         @test all(mesh.h .≈ 0.25)

@@ -14,7 +14,8 @@ Concretely, it supplies three things and nothing else:
 
 1. the **weights and collocation points** for a chosen mode,
 2. the **collocation and continuity equations** built from them, and
-3. `DAEta`, which carries that discretization so the helpers never ask for it twice.
+3. `CollocationExaCore`, an `ExaCore` carrying that discretization so the helpers never ask
+   for it twice.
 
 Dependencies are restricted to **ExaModels** and **FastGaussQuadrature**. Do not add others.
 
@@ -56,7 +57,8 @@ includes them in exactly this dependency order:
 4. **`mesh.jl`** — placement along physical time: `h[i] = nodes[i+1] - nodes[i]` and
    `t[i,j] = nodes[i] + h[i]·τ_j`.
 
-`daeta.jl` comes last and holds the result.
+`src/core/` comes last and holds the result: `handles.jl` the variable handle, `core.jl` the
+container, in that include order.
 
 **`N` counts intervals, not boundary points.** `h = diff(nodes)`, `N = length(h)`, so 21
 nodes give `N = 20` and `t` is `20 × K`.
@@ -82,12 +84,15 @@ the `k = 0` index — no extra block. With `f_ij = f(z[…,i,j], t[i,j])`:
 `StateForm` puts the state under the weights and evaluates `f` once per row; `DerivativeForm`
 puts `f` under the weights, re-evaluating it at every collocation point of the interval, which
 is what makes it the implicit Runge-Kutta step (`A` the Butcher tableau, `b` its quadrature
-weights). The helpers branch on `_isstateform(dae)` at runtime and build both.
+weights). The helpers branch on `_isstateform(core)` at runtime and build both.
 
-One consequence: `StateForm` continuity needs no right-hand side, so `@add_con_continuity`
-takes only the slice and one call covers everything; `DerivativeForm` continuity contains `f`,
-so it takes the collocation call's slice *and* generator. Passing the wrong arity for the
-active mode throws — do not make it silently build the other form.
+One consequence: `DerivativeForm` continuity contains `f`, where `StateForm` continuity needs
+none. **The caller writes it once either way.** `add_con_collocation` records its rows and its
+right-hand side as a `Residual` on the container under `DerivativeForm`, and continuity reads
+the `f` for a slot back off that record, so both bases take the same call — the slots to tie,
+and nothing else. Keep that property: a second spelling of continuity is what this replaced.
+The record is what makes the ordering real, so `add_con_collocation` comes first and a slot
+with no residual behind it throws.
 
 Under Lobatto, `τ₁ = 0` coincides with the `k = 0` index, so the `k = 1` row reduces to
 `z[…,i,1] = z[…,i,0]`: one redundant variable and one trivial equation per interval. It is
@@ -98,26 +103,36 @@ consistent, and the observed order is unaffected.
 **One file per exported function, named after it.** `src/add_con_collocation.jl` defines
 `add_con_collocation`, and so on. Keep new helpers to that rule.
 
+**Each is a function plus a macro of the same name**, related the way `ExaModels.add_var` and
+`@add_var` are: the function does the work and returns `(core, handle)`, and the macro writes
+the name bare, rebinds `core` in the calling scope, and calls the function. Everything a
+residual depends on belongs in the function.
+
 - `add_var_collocation` — `ExaModels.add_var` with the two mesh axes appended. The caller
   declares the **per-timepoint** shape; `z[v,c]` declared becomes `z[v,c,i,k]` allocated,
   `i = 1,…,N` and `k` over `krange`. `include_boundary = true` (default) gives `k = 0,…,K`,
   carrying the interval-left boundary node continuity needs; `false` gives `k = 1,…,K`.
   Pass-through keywords (`start`, `lvar`, `uvar`, `tag`) are shaped to the **allocated**
   block, not the declared one.
-- `@add_con_collocation` — `ExaModels.@add_con` plus exactly three things: the expression is
-  put into the residual form of `dae.mode`, the basis-polynomial sum is attached as an
+- `add_con_collocation` — `ExaModels.add_con` plus exactly three things: the expression is
+  put into the residual form of `core.mode`, the basis-polynomial sum is attached as an
   `add_con!` augmentation, and the iterator runs over the collocation points. Nothing else.
-- `@add_con_continuity` — the junction rows for `i = 1,…,N-1`, in the form the mode dictates.
-  Under `StateForm` the caller's iterator names only the **slots** to tie; `i` is fixed by
-  the mode, so the macro crosses it in under a gensym rather than making the caller
-  destructure an index the residual never lets them use. Same principle as `h`: data the
-  caller cannot reference does not belong in the tuple. `DerivativeForm` is the exception —
-  it reuses the collocation generator, where `i` is already the caller's own.
+- `add_con_continuity` — the junction rows for `i = 1,…,N-1`, in the form the mode dictates.
+  It takes the variable alone: the slots come off the `Residual`s the collocation calls
+  recorded, and `i` is fixed by the mode, so the helper crosses both in itself rather than
+  making the caller carry indices the residual never lets them use. Same principle as `h`:
+  data the caller cannot reference stays out of the tuple. Every slot of the block must be
+  covered exactly once — twice and a junction row would integrate two right-hand sides, not
+  at all and it would be left silently untied — so `add_con_collocation` comes first, for
+  either basis.
 
 In `DerivativeForm`, both helpers re-evaluate the caller's right-hand side at every
-collocation point `j` of the interval. The stencil does that by rebinding the caller's own
-loop variables to that point, so the *same* expression means `f_ij` in the augmentation and
-`f_ik` in the base row. That is why the caller writes it once, unchanged, for either mode.
+collocation point `j` of the interval, by handing `f` a row of the caller's own iterator with
+the trailing `(i, k, t)` moved to that point. The *same* expression therefore means `f_ij` in
+the augmentation and `f_ik` in the base row, which is why the caller writes it once,
+unchanged, for either mode. Continuity does the same thing from the other side: each row of
+the iterator is an `f_ik` already, so it carries its own `b[k]` into the junction row of its
+interval.
 
 Initial, terminal, and path conditions carry **no collocation content**. Write them with
 plain `ExaModels.@add_con`. Do not grow this module past the three helpers above.
@@ -130,58 +145,143 @@ this exact pattern; read them before changing a helper.
 1. **Mirror the upstream signature.** `add_var` takes `(core, dims...)` with the name as an
    optional `name = Val(:z)` **keyword** — never a positional `Symbol` — and returns
    `(core, var)`. The macro is what writes the name bare and binds it locally. Helpers here
-   do the same. `ExaCore` is immutable and gets rebound; `DAEta` is mutable and is updated in
-   place, so it is passed but never returned.
+   do the same, and there is nothing to thread alongside `core` — it carries the
+   discretization itself. See the container contract below.
 2. **Iterators are flat arrays of tuples, destructured in the generator**: `for (v,c,i,k,t)
    in itr`. Not NamedTuples with `d.field`.
 3. **Traced loop indices cannot index a plain Julia array.** `A[j+1,k]` or `t[i,k]` inside a
    user expression throws `invalid index … of type DataIndexed`. Numeric data must ride in
-   the iterator tuple — hence `collocation_itr` carrying `t`. Data the *caller* never
-   references does not belong there: the macro appends `h` itself, before tracing.
+   the iterator tuple — hence the caller's row carrying `t`. Data the *caller* never
+   references does not belong there: the helper appends `h` itself, before tracing.
 4. **`add_con!` keys rows by position in the base iterator, not by index value.** PEtab gets
-   away with `(i,k,cidx) =>` because all its ranges start at 1, so value == position. Here
-   `leads` may be a restricted slice (`2:2`) where they diverge, so base iterators are
-   `vec`'d flat and the augmentation is keyed by linear position. Getting this wrong yields
-   an INFEASIBLE model, not an error.
+   away with `(i,k,cidx) =>` because all its ranges start at 1, so value == position. Here a
+   row's leading indices may name a restricted slice (`2:2`) where they diverge, so base
+   iterators are `vec`'d flat and the augmentation is keyed by linear position. Getting this
+   wrong yields an INFEASIBLE model, not an error.
 5. **One `add_con` call per structurally distinct algebraic expression, and no more.** This
    is the whole point of ExaModels: everything that merely *varies* goes in the iterator,
    including the value a constraint equals. Van der Pol's three state equations genuinely
    differ, so they need three calls; its three initial conditions collapse to two (numeric
    vs. `p`-linked). PEtab groups the same way in `_create_initial_conditions`.
-6. **The constraint helpers are macros, taking a state slice `z[leads...]`.** The macro
-   parses the slice to learn which variable is collocated: literal indices pin a dimension,
-   names bound by the iterator vary with it. That is how the stencil knows to emit
-   `z[1,c,i,j]` versus `z[v,c,i,j]`. Do not reintroduce a `Symbol`-keyed lookup.
+6. **The stencil lives in the function; the macro adds nothing to it.** `add_con_*` takes the
+   variable and a generator whose rows read
+   `(z's own indices…, whatever else f varies with…, i, k, t)`, and indexes `z` straight off
+   the leading entries — a literal there holds that dimension at one value, a name bound by
+   the iterator varies with it. `RowLayout` locates the slot and the mesh entries by counting
+   from both ends, so the middle is the caller's to order. `@add_con_*` takes the same
+   arguments and only rebinds `core` and writes the name bare, so the two forms cannot drift.
+   Keep the lookup by handle identity rather than a `Symbol`. The caller builds the iterator:
+   a product helper cannot express a row like `(v, l[v], i, k, t)` whose later entries depend
+   on the leading ones, which is the common case (`test/bruno.jl`'s `sweep`).
+7. **The macros take an optional bare `name`, exactly as `ExaModels.@add_var` does.** Named
+   binds it locally and registers it on `core`; anonymous registers nothing and
+   returns the handle. `_name_val` turns the one into `Val(:name)` and the other into
+   `nothing`, which is the keyword the function already takes.
 
 The leading dimensions are the caller's to name — the helpers impose no meaning on them, and
 neither should the README.
 
-## The DAEta contract
+## The container contract
 
-`DAEta(nodes, K)` fixes the mesh and mode **once**; every helper reads them off the container.
+`CollocationExaCore(nodes, K)` fixes the mesh and mode **once**; every helper reads them off
+the core it is already given.
 
-Five fields, nothing stored twice:
+**It is an `ExaCore`, not a wrapper around one.** `ExaCore` is a concrete struct and cannot be
+subtyped; the extension point is its `tag` parameter, and this follows ExaModels' own
+`two_stage.jl` exactly:
+
+```julia
+struct CollocationTag{MO,ME} <: ExaModels.AbstractExaModelTag ... end
+const CollocationExaCore{T,VT,B} = ExaCore{T,VT,B,<:CollocationTag}
+const CollocationExaModel{T,VT,E,V,P,O,C,R} = ExaModel{T,VT,E,V,P,O,C,<:CollocationTag,R}
+```
+
+Two things follow, and both are the point. Every `ExaModels.add_*` dispatches on `ExaCore{T}`,
+so it works here **unforwarded** — a model mixes plain ExaModels constraints with collocation
+ones on one object. And `ExaModel(c)` passes `c.tag` through, so the mesh survives into the
+model, which is what `set_nodes!` needs after a solve. `LegacyExaCore` is the only
+`AbstractExaCore` subtype and exists to be *mutable* for the deprecated API; do not copy it.
+
+**The alias drops `ExaCore`'s own `VT <: AbstractVector{T}` bound.** A method written
+`c::CollocationExaCore` is therefore *ambiguous* with ExaModels' `getproperty`/`show` over
+`E <: Union{ExaCore, ExaModel}` — it fails at the first `add_var`, not at load. Restate the
+bound in the `where` clause, which is what `two_stage.jl` does on every one of its methods:
+
+```julia
+Base.getproperty(c::CollocationExaCore{T,VT,B}, name::Symbol) where {T,VT<:AbstractVector{T},B}
+```
+
+Four fields on the tag, nothing stored twice:
 
 - `mode` (`CollocationMode`) — `roots`, `basis`, `polynomial`, `weights`. τ-space.
-- `mesh` (`CollocationMesh`) — `nodes`, `h`, `t`. t-space.
-- `vars`, `cons` — `NamedTuple`s of the handles that were given a name.
-- `blocks` — `Vector` of every `VarBlock`, named or not.
+- `mesh` (`CollocationMesh`) — `nodes`, `h`, `t`, and `hpar`, `tpar` under an adaptive mesh.
+  t-space.
+- `blocks` — every `CollocationVariable`.
+- `residuals` — every `Residual`: the rows and the right-hand side one `add_con_collocation`
+  call was given. Recorded for **both** bases: `StateForm` continuity has no use for the `f`,
+  but both read their slots off it.
 
-This mirrors `ExaCore`, which keeps every variable in `core.var` and only the named ones in
-`core.refs`. `_block_layout` and `block` find a block by **handle identity**, never by
-`Symbol`, so anonymous blocks work; `_block_layout` also rejects more than two leading dims.
+**Named handles are not tracked here.** `add_var(c, …; name = Val(:z))` already registers into
+the inner `refs`, which `ExaModel` carries over, so `c.z` and `model.z` both fall out of
+forwarding `getproperty` — there is no second registry to keep in step. `add_var_collocation`
+only swaps the `CollocationVariable` in for the bare `Variable` afterwards, through
+`_rehandle`, so the handle the caller holds is the handle `core.z` gives back.
 
-`N`, `K`, `nodes`, and the `mode` fields are **derived**, surfaced through `getproperty` — do
-not add them back as stored fields. Internally use `_mesh`, `_mode`, `_weights`, `_degree`,
-`_nintervals` rather than reaching for fields that do not exist. Because `DAEta` overrides
-`getproperty`, internal code must use `getfield`/`setfield!` for real fields.
+**`blocks` and `residuals` are `Vector`s grown in place**, so the tag's type is fixed at
+construction. This is what `two_stage.jl` does with `var_scen`, and what `ExaCore` itself does
+with `x0` and `lvar` inside `add_var`. The consequence is real and worth knowing: a core and
+every core derived from it **share one tag**, so a block added to the later one is visible on
+the earlier one. Only the `ExaCore` fields are copy-on-update.
+
+`N`, `K`, `nodes`, `adaptive`, and the `mode` fields are **derived**, surfaced through
+`getproperty` on both the core and the model — do not add them back as stored fields.
+Internally use `_mesh`, `_mode`, `_weights`, `_degree`, `_nintervals`, and `getfield` for real
+fields.
+
+**`CollocationVariable <: ExaModels.AbstractVariable` carries its own layout** — `dims` and
+`krange` — so there is no side table to look a block up in, and "was this created by
+`add_var_collocation`?" is a type check. This works because ExaModels writes every indexing
+method generically over `AbstractVariable` (`.size`, `.offset`, `.length`) and because
+`core.var` is inert bookkeeping the evaluator never reads. **Constraints are the opposite**:
+`offset0(::Constraint, i)` and `_constraint_dims(::Constraint)` are typed concretely, and
+`core.cons` *is* read in the evaluator hot loop, so `add_con_collocation` returns the plain
+`Constraint` and the record stays a separate `Residual`. Do not wrap it.
 
 `_split_collocation_args` in `add_var_collocation.jl` accepts both `f(a; k = v)` and
 `f(a, k = v)` keyword spellings — reuse it for new macros.
 
+## The adaptive mesh
+
+`h` and `t` are the only t-space data the residuals read — `A`, `b` and `taus` are τ-space and
+do not move — so they are the only two an adaptive mesh has to make mutable. Under
+`adaptive = true` each is additionally allocated as an `add_par` block and the residuals index
+the handle; the numeric arrays stay, because bounds, `start`, and initialization by
+integration need plain numbers.
+
+**Both paths ship, and `adaptive` picks.** The numeric path is not dead weight: it appends `h`
+to the row in plain Julia and folds `-h[i]·A[j,k]` into one constant, where the parameter path
+allocates `N·K + N` parameters and traces a product of two symbolic terms. Keep it.
+
+**A graph node cannot ride in an iterator tuple.** `add_con` and `ExaModel` accept a
+`Vector{Tuple{Int,ParameterNode}}` silently and then `cons!` throws `Cannot convert Node2 to
+Float64` — a build-time silence, so this is worth stating twice. That is why an adaptive row
+ends `(…, i, k)` and a numeric one ends `(…, i, k, t)`: with a parameter mesh the caller
+indexes `mesh.tpar[i,k]` inside the right-hand side instead of destructuring `t`.
+`_row_layout` builds the `RowLayout` from `_nmesh(core)` accordingly. It also means the same
+expression means `f_ij` in a `DerivativeForm` augmentation and `f_ik` in the base row for free,
+since `tpar` is indexed by whatever `k` the row carries.
+
+`set_nodes!` recomputes `nodes`, `h`, `t` in place and writes both parameter blocks through.
+It redistributes a **fixed** number of intervals; adding one changes the variable count and
+needs a rebuild.
+
 ## Testing
 
 Tests must **exercise every build path**: each roots family × each basis × a range of `K`.
+
+**Four files, and keep them to four.** `collocation.jl` for the mode math, `api.jl` for every
+helper the package exports, then `vanderpol.jl` and `bruno.jl` for the two whole models. A new
+helper gets a testset in `api.jl`, not a file of its own.
 
 `test/collocation.jl` covers the mode math. Check the weights against the identities that
 define them — a Lagrange weight vector applied to the nodal values of a polynomial of degree
@@ -189,8 +289,10 @@ define them — a Lagrange weight vector applied to the nodal values of a polyno
 — rather than against stored numbers. Assert the shapes too; that is what catches a weight
 matrix silently wrong for its basis.
 
-`test/add_con_collocation.jl` covers both residual forms on `dz/dt = -z`, solved through the
-helpers, using the two invariants that a fixed tolerance would miss:
+`test/api.jl` covers `CollocationExaCore`, `add_var_collocation`, and the constraint helpers,
+and closes
+with both residual forms on `dz/dt = -z`, solved through them, using the two invariants that a
+fixed tolerance would miss:
 
 - **The bases agree.** `StateForm` and `DerivativeForm` are algebraically equivalent
   discretizations over the same variables, so on the same roots they must reach the same
@@ -198,13 +300,25 @@ helpers, using the two invariants that a fixed tolerance would miss:
 - **The order is right.** Terminal error must decay at `O(h²ᴷ)` for Legendre, `O(h²ᴷ⁻¹)` for
   Radau, `O(h²ᴷ⁻²)` for Lobatto. A mis-weighted stencil can still converge; it loses order.
 
+It also pins the two interfaces to each other: the same decay problem, built once through the
+macros and once through the functions, must give identical residuals row for row. And it
+pins the two **meshes** to each other the same
+way: on the same nodes, `adaptive = true` must reproduce the numeric mesh's solution, not
+merely come close; after a `set_nodes!`, the model must match one rebuilt on those nodes from
+scratch. That second one is what catches `h` moving without `t`.
+
 `test/vanderpol.jl` covers the helpers end to end on the optimal control problem.
 
 `test/bruno.jl` does the same for parameter estimation, on the PEtab Benchmark Collection's
 `Bruno_JExpBot2016`. It is the regression test for two things nothing else covers: `start` on
 `add_var_collocation` (the state profile is initialized by integrating at the starting
-parameters), and grouping — seven species equations reduce to four `@add_con_collocation`
-calls. Its objective is checked against the negative log-likelihood PEtab.jl reports at the
+parameters), and grouping — seven species obey four structurally distinct expressions, so the
+state is declared as four blocks, one per expression, each taking a single
+`@add_con_collocation` and a single `@add_con_continuity`. Note what that costs: the initial
+conditions and the objective *are* uniform across all seven species, so splitting the state
+turns each of them into one call per block. The terms of the `z3` and `z4` equations are
+ordered so that term `j` always draws from one block, which is what keeps those to one call
+each. Its objective is checked against the negative log-likelihood PEtab.jl reports at the
 collection's nominal parameters, `-46.68818145`, to `atol = 1e-6`; that single assertion
 covers the whole discretization, so do not loosen it to make an unrelated change pass.
 

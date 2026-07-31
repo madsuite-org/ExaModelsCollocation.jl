@@ -15,34 +15,33 @@ using MadNLP
     tf, N, K = 5.0, 19, 3
 
     function build(; p1_bounds = (-2.0, 2.0))
-        dae = DAEta(range(0.0, tf; length = N + 1), K)
-        core = ExaModels.ExaCore(; concrete = Val(true))
+        core = CollocationExaCore(range(0.0, tf; length = N + 1), K)
 
-        @add_var_collocation(core, dae, z, 1:nz, 1:Nc)                            # k = 0,...,K
-        @add_var_collocation(core, dae, u, 1:nu, 1:Nc; include_boundary = false)  # k = 1,...,K
+        @add_var_collocation(core, z, 1:nz, 1:Nc)                            # k = 0,...,K
+        @add_var_collocation(core, u, 1:nu, 1:Nc; include_boundary = false)  # k = 1,...,K
         ExaModels.@add_var(core, p, 1:2;
             lvar = [p1_bounds[1], -1.0], uvar = [p1_bounds[2], 1.0], start = [1.0, 0.0])
         ExaModels.@add_par(core, th, [1.0])
 
-        # Three structurally distinct right-hand sides, so three calls. Each pins v in the
-        # slice and varies c through the iterator.
-        itr = collocation_itr(dae, 1:Nc)
+        # Three structurally distinct right-hand sides, so three calls. z[v,c] is the slot a
+        # row constrains, so its two indices lead: v is pinned per call, c varies.
+        mesh_t = core.mesh.t
+        sweep(v) = vec([(v, c, i, k, mesh_t[i, k]) for c in 1:Nc, i in 1:N, k in 1:K])
 
-        @add_con_collocation(core, dae, coll1, z[1, c],
-            z[2, c, i, k] for (c, i, k, t) in itr)
+        @add_con_collocation(core, coll1, z,
+            z[2, c, i, k] for (v, c, i, k, t) in sweep(1))
 
-        @add_con_collocation(core, dae, coll2, z[2, c],
+        @add_con_collocation(core, coll2, z,
             th[1] * z[2, c, i, k] * (1 - z[1, c, i, k]^2)
                 - z[1, c, i, k] + u[1, c, i, k] + p[2] * cos(t)
-            for (c, i, k, t) in itr)
+            for (v, c, i, k, t) in sweep(2))
 
-        @add_con_collocation(core, dae, coll3, z[3, c],
+        @add_con_collocation(core, coll3, z,
             z[1, c, i, k]^2 + z[2, c, i, k]^2 + u[1, c, i, k]^2
-            for (c, i, k, t) in itr)
+            for (v, c, i, k, t) in sweep(3))
 
-        # One call for every component and condition
-        @add_con_continuity(core, dae, cont,
-            z[v, c] for (v, c) in continuity_itr(dae, 1:nz, 1:Nc))
+        # One call: the slots come off the three collocation calls above
+        @add_con_continuity(core, cont, z)
 
         # z(t0) = (0, p1, 0). The zero entries are one expression, the p-linked one another.
         ExaModels.@add_con(core, ic_fix,
@@ -52,13 +51,13 @@ using MadNLP
 
         ExaModels.@add_obj(core, z[3, 1, N, K] for _ in 1:1)
 
-        return core, dae, z, u, p
+        return core, z, u, p
     end
 
     @testset "as originally posed" begin
-        core, dae, z, u, p = build()
+        core, z, u, p = build()
         @test core.nvar == nz * Nc * N * (K + 1) + nu * Nc * N * K + 2
-        @test :coll2 in propertynames(dae)
+        @test :coll2 in propertynames(core)
 
         result = madnlp(ExaModels.ExaModel(core); print_level = MadNLP.ERROR)
         @test result.status == MadNLP.SOLVE_SUCCEEDED
@@ -72,7 +71,7 @@ using MadNLP
 
     @testset "with a nonzero initial velocity" begin
         # Pin p1 = 1 so the oscillator actually has to be driven to rest.
-        core, dae, z, u, p = build(p1_bounds = (1.0, 1.0))
+        core, z, u, p = build(p1_bounds = (1.0, 1.0))
 
         result = madnlp(ExaModels.ExaModel(core); print_level = MadNLP.ERROR)
         @test result.status == MadNLP.SOLVE_SUCCEEDED

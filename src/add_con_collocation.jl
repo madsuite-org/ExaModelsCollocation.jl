@@ -1,7 +1,7 @@
 # Collocation residual, as a thin wrapper over ExaModels.add_con.
 #
 # Relative to add_con, this does three things and nothing else:
-#   1. puts the supplied expression into the residual form of the DAEta's CollocationMode
+#   1. puts the supplied expression into the residual form of the core's CollocationMode
 #   2. attaches the basis-polynomial sum as a constraint augmentation (add_con!)
 #   3. runs the iterator across the collocation points
 #
@@ -15,189 +15,215 @@
 # puts f under the weights and evaluates it at every collocation point of the interval. zdot
 # is never a variable in either -- it is f evaluated there -- so add_var_collocation
 # allocates the same block for both, and only the residual changes.
+#
+# add_con_collocation takes rows that carry every index of z, so the stencil reads them
+# straight off the tuple. The macro adds nothing to that: it rebinds `core` and writes the
+# constraint name bare, exactly as @add_var_collocation does.
 
-"""
-    collocation_itr(dae, leads...)
+# add_con! keys its augmentation by position in the base iterator, so rows are flattened on
+# the way in: a caller writing `[(v,c) for v in 1:Nz, c in 1:Nc]` gets a matrix, and
+# column-major order is the order the rows were written in either way.
+_flat(itr) = vec(collect(itr))
 
-Convenience constructor for the iterator an [`@add_con_collocation`](@ref) generator runs
-over. Elements are flat tuples, destructured in the generator body the way ExaModels
-iterators normally are:
-
-    (leads..., i, k, t)
-
-`leads` are whichever of the block's own dimensions vary across this constraint — dimensions
-pinned in the state slice are simply left out. `i` and `k` run over the intervals and
-collocation points. `t` is the collocation time `mesh.t[i,k]`, carried in the tuple because a
-traced index cannot look it up in a plain array; leave it unused if the right-hand side is
-autonomous.
-
-Nothing here is privileged: any iterator whose tuples end in `(…, i, k, t)` works, so build
-your own comprehension when you want a different sweep.
-
-## Example
-
-```julia
-# z declared over (v, c). Pin v = 1, vary c:
-collocation_itr(dae, 1:Nc)          # → (c, i, k, t)
-
-# vary both:
-collocation_itr(dae, 1:Nz, 1:Nc)    # → (v, c, i, k, t)
-```
-"""
-function collocation_itr(dae::DAEta, leads...)
-    _require_mesh(dae, :collocation_itr)
-    mesh = _mesh(dae)
-    N, K = _nintervals(dae), _degree(dae)
-    return vec([
-        (lead..., i, k, mesh.t[i, k])
-        for lead in Iterators.product(leads...), i in 1:N, k in 1:K
-    ])
+# The row the caller writes:
+#
+#     (z's own indices..., anything the right-hand side varies with..., i, k, t)
+#
+# z's indices lead, so a row says which slot it constrains without being told twice; i, k, t
+# trail, so the mesh entries sit in the same place whatever else the row carries. A helper
+# appends its own data past `len`, where the caller's f never looks.
+struct RowLayout
+    len::Int     # length of the caller's row
+    nlead::Int   # leading entries, naming z's slot
+    i::Int       # position of the interval index
+    k::Int       # position of the collocation index
 end
 
+function _row_layout(itr, nlead, nmesh, who::Symbol)
+    isempty(itr) && return RowLayout(nlead + nmesh, nlead, nlead + 1, nlead + 2)
+    len = length(first(itr))
+    len >= nlead + nmesh || throw(ArgumentError(
+        "$who: that block carries $nlead leading dimensions, so the iterator rows read " *
+        "($(nlead == 1 ? "v" : "v, c"), …, i, k$(nmesh == 3 ? ", t" : "")); the ones given " *
+        "carry $len entries."
+    ))
+    return RowLayout(len, nlead, len - nmesh + 1, len - nmesh + 2)
+end
+
+# The slot of z a row constrains, and everything ahead of the mesh entries.
+_slot(d, L::RowLayout) = ntuple(j -> d[j], L.nlead)
+_head(d, L::RowLayout) = d[1:(L.i - 1)]
+
 """
-    @add_con_collocation(core, dae, name, z[leads...], generator; kwargs...)
+    add_con_collocation(core, z, generator; name = nothing, kwargs...)
 
-Add the collocation residual for the state slice `z[leads...]`, enforcing `dz/dt = f` at
-every collocation point.
+Adds the collocation residual for the variable `z` to `core`, enforcing `dz/dt = f` at every
+collocation point of the mesh. Returns `(core, Constraint)`.
 
-Behaves like `ExaModels.@add_con` — the generator supplies the right-hand side `f` and runs
-over a [`collocation_itr`](@ref) — except that the expression is wrapped into the residual
-form of `dae.mode` and the basis-polynomial sum is attached as an augmentation. The call is
-the same for either basis; only what the helper builds from it changes.
+`generator` gives the right-hand side `f` over an iterator of flat tuples, destructured in
+the generator body the way ExaModels iterators normally are:
 
-The state slice says which variable is being collocated. Its indices may be literals, which
-pin that dimension, or names bound by the iterator, which vary with it:
+    (z's own indices…, anything else f varies with…, i, k, t)
 
+The leading indices are the slot of `z` that row constrains, so an index held fixed is
+written as a literal. `i` and `k` run over the intervals and collocation points, and `t` is
+the collocation time `core.mesh.t[i,k]`, carried in the tuple because a traced index reads
+it off the tuple rather than out of a plain array; leave it unused if `f` is autonomous. On
+an adaptive mesh `t` is a parameter block, and a graph node cannot ride in an iterator tuple,
+so the row ends at `k` and `f` indexes `core.mesh.tpar[i,k]` instead. One call per
+structurally distinct `f`.
+
+`core.basis` sets the residual the expression is put into. With `f_ij = f(z[…,i,j], t[i,j])`,
+for `k = 1,…,K`:
+
+| `basis` | residual |
+|---|---|
+| `StateForm` | `Σⱼ₌₀..ᴷ A[j,k] z[…,i,j] = h[i] f_ik` |
+| `DerivativeForm` | `z[…,i,k] − z[…,i,0] = h[i] Σⱼ₌₁..ᴷ A[j,k] f_ij` |
+
+`h[i]` is attached by the helper, and `k = 0` is the interval-left boundary node
+[`add_var_collocation`](@ref) allocates with `include_boundary = true`.
+
+## Keyword Arguments
+- `name` : When given as `Val(:name)`, registers the constraint in `core` for later retrieval as `core.name` or `model.name`. See [`@add_con_collocation`](@ref) for the idiomatic named interface.
+- Remaining keyword arguments are passed on to `ExaModels.add_con` and mean exactly what they do there: `lcon`, `ucon`, `start`, `tag`.
+
+## Example
 ```julia
-# one equation for component 1, across every condition
-@add_con_collocation(core, dae, coll1, z[1,c],
-    z[2,c,i,k] for (c,i,k,t) in collocation_itr(dae, 1:Nc))
+julia> itr = [(v, c, i, k, core.mesh.t[i,k])
+              for v in 1:Nz, c in 1:Nc, i in 1:core.N, k in 1:core.K];
 
-# one equation shared by every component, when the right-hand side is uniform in v
-@add_con_collocation(core, dae, coll, z[v,c],
-    -decay[v] * z[v,c,i,k] for (v,c,i,k,t) in collocation_itr(dae, 1:Nz, 1:Nc))
+julia> core, coll = add_con_collocation(core, z,
+           -decay[v] * z[v,c,i,k] for (v,c,i,k,t) in itr);       # z[v,c] is the row's slot
 ```
+"""
+function add_con_collocation(
+        core::CollocationExaCore,
+        z,
+        gen::Base.Generator;
+        name = nothing,
+        kwargs...,
+    )
+    nlead, K = _block_layout(core, z, :add_con_collocation)
+    mesh, w = _mesh(core), _weights(core)
 
-Updates `core` and `dae` in the calling scope and binds `name` to the new constraint.
+    itr, f = _flat(gen.iter), gen.f
+    L = _row_layout(itr, nlead, _nmesh(core), :add_con_collocation)
+    hp = mesh.hpar    # nothing on a numeric mesh, the h parameter block on an adaptive one
+
+    local con
+    if _isstateform(core)
+        # 10.7. Base rows carry -h f; the weights ride on the state, j = 0,...,K. On a
+        # numeric mesh h is appended past the caller's row, in plain Julia before any
+        # tracing, so f reads its own row and leaves the entry past it alone; on an adaptive
+        # one it is indexed off the parameter block by the row's own i.
+        base = hp === nothing ? [(row..., mesh.h[row[L.i]]) for row in itr] : itr
+        rhs = hp === nothing ? (r -> -r[L.len + 1] * f(r)) : (r -> -hp[r[L.i]] * f(r))
+        core, con = ExaModels.add_con(
+            core, Base.Generator(rhs, base); name = name, kwargs...,
+        )
+
+        st = vec([
+            (n, w.A[j + 1, d[L.k]], _slot(d, L)..., d[L.i], j)
+            for (n, d) in enumerate(itr), j in 0:K
+        ])
+        core, _ = ExaModels.add_con!(core, con, Base.Generator(_state_stencil(z, nlead), st))
+    else
+        # 10.8. Base rows carry z[...,i,k] - z[...,i,0]; the weights ride on f, which is
+        # re-evaluated at every collocation point j = 1,...,K of the same interval. The
+        # stencil rows are the caller's own rows with the mesh entries moved to that point,
+        # so the very same f means f_ij here and f_ik above.
+        base = [(_slot(d, L)..., d[L.i], d[L.k]) for d in itr]
+        core, con = ExaModels.add_con(
+            core, Base.Generator(_derivative_base(z, nlead), base);
+            name = name, kwargs...,
+        )
+
+        # Each stencil row is the caller's own row with the mesh entries moved to j, then the
+        # augmentation key and weight appended past it. On an adaptive mesh the row carries
+        # no t -- the caller reads it off the parameter block, so writing tpar[i,k] means
+        # tpar[i,j] here for free -- and h rides on the generator instead of the weight.
+        st = hp === nothing ?
+            vec([
+                (_head(d, L)..., d[L.i], j, mesh.t[d[L.i], j],
+                 n, -mesh.h[d[L.i]] * w.A[j, d[L.k]])
+                for (n, d) in enumerate(itr), j in 1:K
+            ]) :
+            vec([
+                (_head(d, L)..., d[L.i], j, n, w.A[j, d[L.k]])
+                for (n, d) in enumerate(itr), j in 1:K
+            ])
+        aug = hp === nothing ?
+            (s -> s[L.len + 1] => s[L.len + 2] * f(s)) :
+            (s -> s[L.len + 1] => -hp[s[L.i]] * s[L.len + 2] * f(s))
+        core, _ = ExaModels.add_con!(core, con, Base.Generator(aug, st))
+    end
+
+    # Which slots were collocated, and with what f. Continuity reads its rows off this, and
+    # under DerivativeForm integrates the same f, so it is recorded for either basis.
+    core = _addresidual(core, Residual(z, itr, f, unique(_slot(d, L) for d in itr)))
+    return core, con
+end
+
+# The two stencils that index z, one per leading-dimension count _block_layout admits.
+# n => a * z[slot..., i, j], off a row (n, a, slot..., i, j)
+_state_stencil(z, nlead) = nlead == 1 ?
+    (s -> s[1] => s[2] * z[s[3], s[4], s[5]]) :
+    (s -> s[1] => s[2] * z[s[3], s[4], s[5], s[6]])
+
+# z[slot..., i, k] - z[slot..., i, 0], off a row (slot..., i, k)
+_derivative_base(z, nlead) = nlead == 1 ?
+    (r -> z[r[1], r[2], r[3]] - z[r[1], r[2], 0]) :
+    (r -> z[r[1], r[2], r[3], r[4]] - z[r[1], r[2], r[3], 0])
+
+"""
+    @add_con_collocation(core, [name,] z, generator; kwargs...)
+
+Macro interface for [`add_con_collocation`](@ref). Updates `core` in the calling scope.
+
+- **Named** (`@add_con_collocation(core, coll, z, generator)`): binds `coll` to the new
+  `Constraint` in the local scope and registers it in `core` for later retrieval as
+  `core.coll` or `model.coll`.
+- **Anonymous** (`@add_con_collocation(core, z, generator)`): equivalent to
+  `core, coll = add_con_collocation(core, z, generator)`.
+
+Accepts the same keyword arguments as [`add_con_collocation`](@ref).
+
+## Example
+```julia
+julia> @add_var_collocation(core, z, 1:Nz)
+
+julia> @add_var_collocation(core, u, 1:Nu; include_boundary = false)
+
+julia> itr = [(v, l[v], i, k, core.mesh.t[i,k])
+              for v in 1:Nz, i in 1:core.N, k in 1:core.K];
+
+julia> @add_con_collocation(core, coll, z,
+           z[v,i,k] * u[l,i,k] * cos(t) for (v,l,i,k,t) in itr)
+```
 """
 macro add_con_collocation(exs...)
     args, kwargs = _split_collocation_args(exs)
-    length(args) == 5 || error(
-        "@add_con_collocation requires core, dae, a name, a state slice z[...], and a generator"
-    )
-    core, dae, name, slice, gen = args
+    length(args) in (3, 4) ||
+        error("@add_con_collocation requires core, an optional name, a variable, and a generator")
 
-    name isa Symbol ||
-        error("@add_con_collocation: the third argument must be the constraint name")
-    zsym, leads = _parse_slice(slice, "@add_con_collocation")
-    rhs, loopvars, itrexpr = _parse_gen(gen, "@add_con_collocation")
+    core = args[1]
+    name, zsym, gen = length(args) == 4 ? args[2:4] : (nothing, args[2], args[3])
+    name === nothing || name isa Symbol ||
+        error("@add_con_collocation: the second argument must be the constraint name")
 
-    # collocation_itr elements are (leads..., i, k, t)
-    nv = length(loopvars)
-    nv >= 3 || error(
-        "@add_con_collocation: the iterator must yield (leads..., i, k, t); " *
-        "build it with `collocation_itr(dae, leads...)`"
-    )
-    nlead, ipos, kpos = nv - 3, nv - 2, nv - 1
-    ivar, kvar = loopvars[ipos], loopvars[kpos]
-
-    itr, w, mesh, K, con, st, base, n, j, a, h =
-        gensym.((:itr, :w, :mesh, :K, :con, :stencil, :base, :n, :j, :a, :h))
-
-    # z[leads..., i, <k>], with the slice's own leading indices
-    zref(kexpr) = :($(esc(zsym))[$(map(esc, leads)...), $(esc(ivar)), $kexpr])
+    con = gensym(:con)
 
     return quote
-        local $itr = $(esc(itrexpr))
-        local $w = _weights($(esc(dae)))
-        local $mesh = _mesh($(esc(dae)))
-        local $K = _degree($(esc(dae)))
-        _check_slice($(esc(dae)), $(esc(zsym)), $(length(leads)), :add_con_collocation)
-
         local $con
-        if _isstateform($(esc(dae)))
-            # 10.7. Base rows carry -h f; the weights ride on the state, j = 0,...,K.
-            # h multiplies the residual and is never named by the caller, so it is appended
-            # here rather than carried in the iterator. Plain Julia, before any tracing.
-            local $base = [(row..., $mesh.h[row[$ipos]]) for row in $itr]
-            $(esc(core)), $con = ExaModels.add_con(
-                $(esc(core)),
-                (
-                    -$h * $(esc(rhs))
-                    for $(Expr(:tuple, map(esc, loopvars)..., h)) in $base
-                );
-                name = $(Val(name)),
-                $(map(esc, kwargs)...),
-            )
-
-            local $st = vec([
-                ($n, d..., $j, $w.A[$j + 1, d[$kpos]])
-                for ($n, d) in enumerate($itr), $j in 0:$K
-            ])
-            $(esc(core)), _ = ExaModels.add_con!(
-                $(esc(core)), $con,
-                $n => $a * $(zref(j))
-                for $(Expr(:tuple, n, map(esc, loopvars)..., j, a)) in $st
-            )
-        else
-            # 10.8. Base rows carry z[...,i,k] - z[...,i,0]; the weights ride on f, which is
-            # re-evaluated at each collocation point j = 1,...,K of the same interval. The
-            # stencil rebinds the caller's loop variables to that point, so the very same
-            # expression means f_ij here and f_ik above.
-            $(esc(core)), $con = ExaModels.add_con(
-                $(esc(core)),
-                (
-                    $(zref(esc(kvar))) - $(zref(0))
-                    for $(esc(_tuple(loopvars))) in $itr
-                );
-                name = $(Val(name)),
-                $(map(esc, kwargs)...),
-            )
-
-            local $st = vec([
-                (
-                    $n, d[1:$nlead]..., d[$ipos], $j, $mesh.t[d[$ipos], $j],
-                    -$mesh.h[d[$ipos]] * $w.A[$j, d[$kpos]],
-                )
-                for ($n, d) in enumerate($itr), $j in 1:$K
-            ])
-            $(esc(core)), _ = ExaModels.add_con!(
-                $(esc(core)), $con,
-                $n => $a * $(esc(rhs))
-                for $(Expr(:tuple, n, map(esc, loopvars)..., a)) in $st
-            )
-        end
-
-        _register!($(esc(dae)), :cons, $(QuoteNode(name)), $con)
-        $(esc(name)) = $con
+        $(esc(core)), $con = add_con_collocation(
+            $(esc(core)),
+            $(esc(zsym)),
+            $(esc(gen));
+            name = $(_name_val(name)),
+            $(map(esc, kwargs)...),
+        )
+        $(name === nothing ? con : :($(esc(name)) = $con))
+        $con
     end
-end
-
-# Split the state slice AST: `z[v,c]` -> (variable name, [index expressions])
-function _parse_slice(ex, who)
-    Meta.isexpr(ex, :ref) || error(
-        "$who: expected a state slice like `z[v,c]`, got `$ex`"
-    )
-    return ex.args[1], ex.args[2:end]
-end
-
-# `expr for (a,b,...) in itr` -> (expr, [a,b,...], itr)
-function _parse_gen(ex, who)
-    Meta.isexpr(ex, :generator) || error("$who: expected a generator, got `$ex`")
-    spec = ex.args[2]
-    Meta.isexpr(spec, :(=)) || error("$who: expected a single `for ... in ...` clause")
-    lhs, itr = spec.args
-    loopvars = Meta.isexpr(lhs, :tuple) ? lhs.args : [lhs]
-    return ex.args[1], loopvars, itr
-end
-
-_tuple(vars) = length(vars) == 1 ? vars[1] : Expr(:tuple, vars...)
-
-# The slice must name a block created by add_var_collocation, with the right arity
-function _check_slice(dae::DAEta, z, nleads::Integer, who::Symbol)
-    nlead, _ = _block_layout(dae, z, who)
-    nleads == nlead || throw(ArgumentError(
-        "$who: that block declares $nlead leading dimensions, but the slice gives $nleads"
-    ))
-    return nothing
 end
