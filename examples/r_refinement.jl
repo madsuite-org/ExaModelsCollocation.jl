@@ -15,148 +15,204 @@ using ExaModelsCollocation
 using MadNLP
 using Plots
 
-# ----- Problem -----
+# ----- Define problem -----
 
 const A, T0, TEND = 100.0, 0.5, 1.0
 
-rhs(t) = A / (1 + A^2 * (t - T0)^2)         # traced into the model, called on numbers below
-zexact(t) = atan(A * (t - T0))              # initial condition, and the plot's colour
+# ODE right-hand side function
+rhs(z, t) = A / (1 + A^2 * (t - T0)^2)
 
-# ----- Build model -----
+# Exact solution for comparison
+zexact(t) = atan(A * (t - T0))
 
-function build(nodes; K = 3)
+# ----- Create ExaModel -----
+
+function example_model(nodes; K = 3)
+    # Create CollocationExaCore with adaptive mesh (t is an ExaModels parameter)
     core = CollocationExaCore(nodes, K; adaptive = true)
-    @add_var_collocation(core, z)                       # no dimensions: z[i,k]
+    t = core.mesh.tpar
 
-    # adaptive: t is a parameter block the rhs indexes, so the row ends at k
-    tp = core.mesh.tpar
+    # Create CollocationVariable
+    @add_var_collocation(core, z)
+
+    # Create collocation constraints    
     itr = [(i, k) for i in 1:core.N, k in 1:core.K]
-    @add_con_collocation(core, coll, z, rhs(tp[i, k]) for (i, k) in itr)
-    @add_con_continuity(core, cont, z)
-    ExaModels.@add_con(core, ic, z[1, 0] - zexact(0.0) for _ in 1:1)
+    @add_con_collocation(core, coll, z, rhs(z[i, k], t[i, k]) for (i, k) in itr)
 
-    return ExaModels.ExaModel(core), z
+    # Create continuity constraints
+    @add_con_continuity(core, cont, z)
+
+    # Create objective function
+    @add_con(core, ic, z[1, 0] - zexact(0.0) for _ in 1:1)
+
+    return ExaModel(core), z
 end
 
-# solution() is 1-based, so k = 0,...,K lands on 1,...,K+1
-solve(model, z) =
-    ExaModels.solution(madnlp(model; print_level = MadNLP.ERROR, tol = 1e-12), z)
-
-# the N+1 boundary values: k = 0 of every interval, then z(TEND), which Radau puts at k = K
-atnodes(zsol) = [zsol[:, 1]; zsol[end, end]]
+solve(model, z) = solution(madnlp(model; print_level = MadNLP.ERROR, tol = 1e-8), z)
 
 # ----- Error estimate -----
 
-# Lagrange basis j over `nodes`, and its derivative, at a tau that is not one of them (the
-# package's delljk is the differentiation matrix, exact only at the nodes)
-lagval(nodes, j, tau) =
-    prod((tau - nodes[m]) / (nodes[j] - nodes[m]) for m in eachindex(nodes) if m != j)
-dell(nodes, j, tau) =
-    lagval(nodes, j, tau) * sum(1 / (tau - nodes[m]) for m in eachindex(nodes) if m != j)
+function estimate_error_phr(model, zsol, f)
+    nodes, h = model.nodes, model.mesh.h
 
-# Local error per interval from the defect |dz_h/dt - f|, sampled between the collocation
-# points -- at them it is zero by construction. No extra solve, no exact solution.
-function localerr(zsol, nodes, taus)
-    h = diff(nodes)
-    x = [0.0; taus]                              # StateForm basis: the anchor, then taus
-    at = [(x[j] + x[j + 1]) / 2 for j in 1:length(taus)]
+    # The degree K Lagrange polynomial our collocation equations use
+    x = [zero(eltype(model.weights.taus)); model.weights.taus]
+    interp(zi, tau) = sum(
+        prod((tau - x[m]) / (x[j] - x[m]) for m in eachindex(x) if m != j) * zi[j]
+        for j in eachindex(x)
+    )
+
+    # The K+1 roots (non-collocation points to compare)
+    fine = Collocation([0.0, 1.0], model.K + 1;
+        roots = model.roots, 
+        basis = DerivativeForm(),
+        polynomial = model.polynomial
+    )
+    tau, Omega = fine.mode.weights.taus, fine.mode.weights.A
+
+    # Calculate max error estimate
     return [
-        h[i] * sum(
-            abs(
-                sum(dell(x, j, s) * zsol[i, j] for j in eachindex(x)) / h[i] -
-                    rhs(nodes[i] + h[i] * s)
-            ) for s in at
-        ) / length(at)
+        # Compare:
+        #   Interpolated states of the degree K Lagrange polynomial at the K+1 roots
+        #   Integrated states as if we had used K+1 Lagrange polynomial
+        let zi = view(zsol, i, :),
+            # Interpolated states of the degree K Lagrange polynomial at the K+1 roots
+            zf = [interp(zi, s) for s in tau],
+
+            # the RHS function evaluated at the K+1 roots
+            ff = [f(zf[m], nodes[i] + h[i] * tau[m]) for m in eachindex(tau)]
+
+            maximum(
+                # Integrated states as if we had used K+1 Lagrange polynomial
+                abs(zi[1] + h[i] * sum(Omega[j, m] * ff[j] for j in eachindex(tau)) - zf[m])
+                for m in eachindex(tau)
+            ) / (1 + maximum(abs, zsol))
+        end
         for i in eachindex(h)
     ]
 end
+# NOTE: this error estimation is cheap because we already obtained the 
+# polynomial coefficients (the discretized states) from solving the NLP
+# so this is just an O(N) calculation, N = num. intervals
+
 
 # ----- Mesh update -----
 
-# Local error goes like h^(K+1), so equidistributing e^(1/(K+1)) equidistributes e. The root
-# is load bearing: equidistributing e itself diverges.
-monitor(est, K) = est .^ (1 / (K + 1))
+function find_new_nodes(model, err; floor_frac = 0.1, passes = 2)
+    nodes, h, N = model.nodes, model.mesh.h, model.N
 
-# de Boor: give every interval an equal share of sum(w) by inverting the cumulative monitor,
-# which is piecewise linear on the current mesh. N never changes -- that is the r in
-# r-refinement, and what set_nodes! allows without a rebuild.
-function equidistribute(nodes, w; floor_frac = 0.1, passes = 2)
-    N = length(w)
-
-    # floor keeps a flat interval from collapsing, smoothing keeps a spike from starving its
-    # neighbours; together they are what make the loop settle
-    w = w .+ floor_frac * (sum(w) / N)
+    # de Boor density (?)
+    rho = err .^ (1 / (model.K + 1)) ./ h
+    rho = rho .+ floor_frac * (sum(rho) / N)
     for _ in 1:passes
-        w = [(w[max(i - 1, 1)] + 2w[i] + w[min(i + 1, N)]) / 4 for i in 1:N]
+        rho = [(rho[max(i - 1, 1)] + 2rho[i] + rho[min(i + 1, N)]) / 4 for i in 1:N]
     end
 
-    W = cumsum([0.0; w])                       # W[i]: monitor mass left of nodes[i]
+    # invert cumulative mass to convert density to new node placement (?)
+    W = cumsum([0.0; rho .* h])                # W[i]: monitor mass left of nodes[i]
     new = collect(float.(nodes))               # the horizon ends stay put
     for m in 2:N
         target = W[end] * (m - 1) / N
         i = clamp(searchsortedlast(W, target), 1, N)
-        new[m] = nodes[i] + (target - W[i]) / w[i] * (nodes[i + 1] - nodes[i])
+        new[m] = nodes[i] + (target - W[i]) / rho[i]
     end
+
     return new
 end
 
-# Node movement in units of the intervals it sits between. A mesh that reproduces itself is
-# the fixed point, and this is the stopping test: with N fixed the error does not go to zero,
-# it goes to whatever the equidistributed mesh gives.
+# ----- r-refinement algorithm -----
+
+# Keep track of how much the mesh moved for convergence criteria purposes
 movement(new, old, h) = maximum(
     abs(new[j] - old[j]) / min(h[max(j - 1, 1)], h[min(j, length(h))])
     for j in eachindex(new)
 )
 
-# Re-interpolate states at interpolation points based on moved nodes for 
-# a better initial guess at next iteration
-function reinterpolate(zsol, old, new, taus)
-    x = [0.0; taus]
+
+# Re-interpolated states at interpolation points based on new node locations for better initial guess
+function reinterpolate(model, zsol, old, new)
+    # evaluate the degree K Lagrange polynomial through the solved coefficients
+    x = [zero(eltype(model.weights.taus)); model.weights.taus]
+    interp(zi, tau) = sum(
+        prod((tau - x[m]) / (x[j] - x[m]) for m in eachindex(x) if m != j) * zi[j]
+        for j in eachindex(x)
+    )
     hold, hnew = diff(old), diff(new)
     start = similar(zsol, size(zsol))
     for i in eachindex(hnew), (k, tau) in enumerate(x)
         t = new[i] + hnew[i] * tau
         ii = clamp(searchsortedlast(old, t), 1, length(hold))
         s = (t - old[ii]) / hold[ii]
-        start[i, k] = sum(lagval(x, j, s) * zsol[ii, j] for j in eachindex(x))
+        start[i, k] = interp(view(zsol, ii, :), s)
     end
     return start
 end
 
-# ----- Refinement loop -----
+function solve_adaptively(
+        model, z, f;
+        tol = 1e-8,
+        movetol = 1e-2,
+        maxiters = 20,
+        verbose = true,
+    )
+    history = []
 
-function rrefine!(model, z; tol = 0.01, maxiters = 20)
-    taus, history = model.weights.taus, []
+    # Solve model
+    zsol = solve(model, z)
+
+    # while (max error < tol OR movement < movement tol)
     for it in 0:maxiters
-        zsol = solve(model, z)
         nodes = copy(model.nodes)
-        push!(history, (; nodes, znode = atnodes(zsol)))
 
-        est = localerr(zsol, nodes, taus)
-        new = equidistribute(nodes, monitor(est, length(taus)))
+        # calculate error using Patterson-Hager-Rao
+        err = estimate_error_phr(model, zsol, f)
+
+        push!(history, (; nodes, zsol, err)) # tracking error histroy for plot
+
+        # find new node placements based on error + de Boor equidistributino
+        new = find_new_nodes(model, err)
         moved = movement(new, nodes, model.mesh.h)
-        println("iteration $it: movement = $moved, estimated error = $(sum(est))")
+        verbose && println("iteration $it: max error = $(maximum(err)), movement = $moved")
 
-        moved < tol && break
-        set_nodes!(model, new)              # writes h and t through; no rebuild
-        set_start!(model, z, reinterpolate(zsol, nodes, new, taus))
+        # convergence criteria
+        (maximum(err) < tol || moved < movetol) && break
+
+        # if criteria not satisfied, set new nodes and re-solve
+        set_nodes!(model, new) # <--- ExaModelsCollocation.jl feature with adaptive = true
+        set_start!(model, z, reinterpolate(model, zsol, nodes, new))
+        zsol = solve(model, z)
     end
+
     return history
 end
 
-# ----- Plot solution -----
 
-# One row per iteration, iteration 0 at the bottom, each node coloured by its own error.
-function plot_history(history; floor = 1e-9)
-    t = reduce(vcat, h.nodes for h in history)
-    iteration = reduce(vcat, fill(i - 1, length(h.nodes)) for (i, h) in enumerate(history))
+# ----- Solve -----
 
-    # log10, floored: the span is eight decades, so a linear scale leaves every converged
-    # node at 0 and only the starting mesh with any colour
-    err = log10.(max.(reduce(vcat, [abs.(h.znode .- zexact.(h.nodes)) for h in history]), floor))
+const N = 30
+
+# Create ExaModel
+model, z = example_model(range(0.0, TEND; length = N + 1))
+
+# Solve with adaptive mesh refinement
+history = solve_adaptively(model, z, rhs)
+
+
+# ----- Plot -----
+
+# Display and plot
+function plot_mesh_history(history, exact; floor = 1.0e-9)
+    atnodes(s) = [s.zsol[:, 1]; s.zsol[end, end]]
+
+    t = reduce(vcat, s.nodes for s in history)
+    iteration = reduce(vcat, fill(i - 1, length(s.nodes)) for (i, s) in enumerate(history))
+
+    err = log10.(
+        max.(reduce(vcat, [abs.(atnodes(s) .- exact.(s.nodes)) for s in history]), floor)
+    )
     err = (err .- minimum(err)) ./ (maximum(err) - minimum(err))
 
-    scatter(
+    return scatter(
         t, iteration;
         marker_z = err, c = :jet, clims = (0, 1),
         markersize = 5, markerstrokewidth = 0, legend = false, colorbar = true,
@@ -169,21 +225,12 @@ function plot_history(history; floor = 1e-9)
         right_margin = 5Plots.mm,
     )
 end
-
-# ----- Run -----
-
-N = 30
-model, z = build(range(0.0, TEND; length = N + 1))
-history = rrefine!(model, z)
-
 nodes = last(history).nodes
 println("h ranges over [$(minimum(diff(nodes))), $(maximum(diff(nodes)))]")
-
-# against the exact solution, which the loop above never saw
-for (it, h) in enumerate(history)
-    println("iteration $(it - 1): |z(T) - exact| = $(abs(h.znode[end] - zexact(TEND)))")
+for (it, s) in enumerate(history)
+    znode = [s.zsol[:, 1]; s.zsol[end, end]]
+    println("iteration $(it - 1): |z(T) - exact| = $(abs(znode[end] - zexact(TEND)))")
 end
-
 png = joinpath(@__DIR__, "r_refinement.png")
-savefig(plot_history(history), png)
+savefig(plot_mesh_history(history, zexact), png)
 println("wrote $png")
