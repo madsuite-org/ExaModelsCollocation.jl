@@ -8,7 +8,7 @@
 #
 #   julia --project=examples examples/r_refinement.jl
 
-ENV["GKSwstype"] = "100"                    # GR writes the png without a display
+ENV["GKSwstype"] = "100"
 
 using ExaModels
 using ExaModelsCollocation
@@ -27,7 +27,7 @@ zexact(t) = atan(A * (t - T0))
 
 # ----- Create ExaModel -----
 
-function example_model(nodes; K = 3)
+function example_model(nodes, K = 3)
     # Create CollocationExaCore with adaptive mesh (t is an ExaModels parameter)
     core = CollocationExaCore(nodes, K; adaptive = true)
     t = core.mesh.tpar
@@ -45,10 +45,10 @@ function example_model(nodes; K = 3)
     # Create objective function
     @add_con(core, ic, z[1, 0] - zexact(0.0) for _ in 1:1)
 
-    return ExaModel(core), z
+    return ExaModel(core)
 end
 
-solve(model, z) = solution(madnlp(model; print_level = MadNLP.ERROR, tol = 1e-8), z)
+solve(model) = solution(madnlp(model; print_level = MadNLP.ERROR, tol = 1e-8), model.z)
 
 # ----- Error estimate -----
 
@@ -70,21 +70,21 @@ function estimate_error_phr(model, zsol, f)
     )
     tau, Omega = fine.mode.weights.taus, fine.mode.weights.A
 
-    # Calculate max error estimate
+    # Calculate error estimate
     return [
         # Compare:
         #   Interpolated states of the degree K Lagrange polynomial at the K+1 roots
-        #   Integrated states as if we had used K+1 Lagrange polynomial
+        #   Integrated states to K+1 degree using K+1 interpolated state points
         let zi = view(zsol, i, :),
-            # Interpolated states of the degree K Lagrange polynomial at the K+1 roots
-            zf = [interp(zi, s) for s in tau],
+            # znew = Interpolated states of the degree K Lagrange polynomial at the K+1 roots
+            znew = [interp(zi, s) for s in tau],
 
             # the RHS function evaluated at the K+1 roots
-            ff = [f(zf[m], nodes[i] + h[i] * tau[m]) for m in eachindex(tau)]
+            fnew = [f(znew[m], nodes[i] + h[i]*tau[m]) for m in eachindex(tau)]
 
             maximum(
-                # Integrated states as if we had used K+1 Lagrange polynomial
-                abs(zi[1] + h[i] * sum(Omega[j, m] * ff[j] for j in eachindex(tau)) - zf[m])
+                # (Integrated states to K+1 degree using K+1 interpolated state points) - znew
+                abs(zi[1] + h[i]*sum(Omega[j,m]*fnew[j] for j in eachindex(tau)) - znew[m])
                 for m in eachindex(tau)
             ) / (1 + maximum(abs, zsol))
         end
@@ -149,8 +149,8 @@ function reinterpolate(model, zsol, old, new)
 end
 
 function solve_adaptively(
-        model, z, f;
-        tol = 1e-8,
+        model, f;
+        tol = 1e-6,
         movetol = 1e-2,
         maxiters = 20,
         verbose = true,
@@ -158,7 +158,7 @@ function solve_adaptively(
     history = []
 
     # Solve model
-    zsol = solve(model, z)
+    zsol = solve(model)
 
     # while (max error < tol OR movement < movement tol)
     for it in 0:maxiters
@@ -179,8 +179,8 @@ function solve_adaptively(
 
         # if criteria not satisfied, set new nodes and re-solve
         set_nodes!(model, new) # <--- ExaModelsCollocation.jl feature with adaptive = true
-        set_start!(model, z, reinterpolate(model, zsol, nodes, new))
-        zsol = solve(model, z)
+        # set_start!(model, model.z, reinterpolate(model, zsol, nodes, new))
+        zsol = solve(model)
     end
 
     return history
@@ -189,42 +189,93 @@ end
 
 # ----- Solve -----
 
-const N = 30
+const N = 50
+const K = 3
 
 # Create ExaModel
-model, z = example_model(range(0.0, TEND; length = N + 1))
+model = example_model(range(0.0, TEND; length = N + 1), K)
 
 # Solve with adaptive mesh refinement
-history = solve_adaptively(model, z, rhs)
+history = solve_adaptively(model, rhs)
 
 
 # ----- Plot -----
 
-# Display and plot
-function plot_mesh_history(history, exact; floor = 1.0e-9)
-    atnodes(s) = [s.zsol[:, 1]; s.zsol[end, end]]
+default(
+    titlefontsize = 16, guidefontsize = 13, tickfontsize = 10,
+    legendfontsize = 10, colorbar_titlefontsize = 12, plot_titlefontsize = 18,
+)
 
+atnodes(s) = [s.zsol[:, 1]; s.zsol[end, end]]
+
+function error_color(history, exact; floor = 1.0e-9)
+    err = [log10.(max.(abs.(atnodes(s) .- exact.(s.nodes)), floor)) for s in history]
+    clims = (log10(floor), ceil(maximum(maximum, err)))
+
+    return err, clims
+end
+
+function colorbar_strip(clims; rows = 256)
+    decades = first(clims):last(clims)
+    ramp = collect(range(first(clims), last(clims); length = rows))
+
+    return heatmap(
+        [0.0], ramp, reshape(ramp, :, 1);
+        c = :jet, clims = clims, legend = false, colorbar = false, grid = false,
+        xticks = false, ymirror = true, tickfontsize = 11,
+        yticks = (decades, ["1e$(Int(d))" for d in decades]),
+        title = "|z_exact - z|", titlefontsize = 12,
+        right_margin = 8Plots.mm,
+    )
+end
+
+# Display and plot
+function plot_mesh_history(history, exact)
     t = reduce(vcat, s.nodes for s in history)
     iteration = reduce(vcat, fill(i - 1, length(s.nodes)) for (i, s) in enumerate(history))
-
-    err = log10.(
-        max.(reduce(vcat, [abs.(atnodes(s) .- exact.(s.nodes)) for s in history]), floor)
-    )
-    err = (err .- minimum(err)) ./ (maximum(err) - minimum(err))
+    err, clims = error_color(history, exact)
 
     return scatter(
         t, iteration;
-        marker_z = err, c = :jet, clims = (0, 1),
-        markersize = 5, markerstrokewidth = 0, legend = false, colorbar = true,
-        colorbar_title = "\nerror vs exact solution",
-        colorbar_ticks = 0:0.2:1,
-        xlabel = "t", ylabel = "refinement iteration",
+        marker_z = reduce(vcat, err), c = :jet, clims = clims,
+        markersize = 5, markerstrokewidth = 0, legend = false, colorbar = false,
+        xlabel = "t", ylabel = "r-iter", guidefontsize = 14,
         xlims = (0.0, TEND), ylims = (-0.5, length(history) - 0.5),
         yticks = 0:(length(history) - 1),
         title = "r-refinement: node placement per iteration",
         right_margin = 5Plots.mm,
     )
 end
+
+function plot_solution_3d(history, exact)
+    zall = reduce(vcat, atnodes(s) for s in history)
+    zfloor = minimum(zall) - 0.18 * (maximum(zall) - minimum(zall))
+    errs, clims = error_color(history, exact)
+
+    p = plot3d(;
+        xlabel = "t", ylabel = "r-iter", zlabel = "z(t)",
+        xlims = (0.0, TEND), ylims = (-0.5, length(history) - 0.5),
+        zlims = (zfloor, maximum(zall)),
+        yticks = 0:(length(history) - 1),
+        legend = false, camera = (17.5, 15), colorbar = false,
+        title = "r-refinement: state trajectory per iteration",
+    )
+
+    for (it, (s, err)) in enumerate(zip(history, errs))
+        iteration = fill(it - 1, length(s.nodes))
+        scatter3d!(
+            p, s.nodes, iteration, fill(zfloor, length(s.nodes));
+            marker_z = err, c = :jet, clims = clims,
+            markersize = 3.5, markerstrokewidth = 0,
+        )
+        plot3d!(
+            p, s.nodes, iteration, atnodes(s);
+            line_z = err, c = :jet, clims = clims, linewidth = 2.5,
+        )
+    end
+    return p
+end
+
 nodes = last(history).nodes
 println("h ranges over [$(minimum(diff(nodes))), $(maximum(diff(nodes)))]")
 for (it, s) in enumerate(history)
@@ -232,5 +283,14 @@ for (it, s) in enumerate(history)
     println("iteration $(it - 1): |z(T) - exact| = $(abs(znode[end] - zexact(TEND)))")
 end
 png = joinpath(@__DIR__, "r_refinement.png")
-savefig(plot_mesh_history(history, zexact), png)
+savefig(
+    plot(
+        plot_mesh_history(history, zexact),
+        plot_solution_3d(history, zexact),
+        colorbar_strip(last(error_color(history, zexact)));
+        layout = grid(1, 3; widths = [0.48, 0.48, 0.04]), size = (1500, 720),
+        left_margin = 8Plots.mm, bottom_margin = 5Plots.mm,
+    ),
+    png,
+)
 println("wrote $png")
