@@ -1,12 +1,11 @@
-# r-refinement: solve, estimate the error per interval, move a fixed number of nodes to
-# equidistribute it, repeat. set_nodes! is what makes the mesh move without a rebuild.
+# toy example of r-refinement:
+#   - solve NLP
+#       - while (err > tol) or (mesh movement > movement_tol)
+#           - estimate error
+#           - relocate mesh
+#           - check convergence criteria
+#           - resolve NLP
 #
-#   dz/dt = a / (1 + a^2 (t - t0)^2),   z(0) = atan(-a t0)   =>   z(t) = atan(a (t - t0))
-#
-# The rise spans ~2/a = 0.02, so N uniform intervals put the peak inside one of them and the
-# quadrature barely sees it. Nothing in the loop knows zexact: it estimates its own error.
-#
-#   julia --project=examples examples/r_refinement.jl
 
 ENV["GKSwstype"] = "100"
 
@@ -86,14 +85,13 @@ function estimate_error_phr(model, zsol, f)
                 # (Integrated states to K+1 degree using K+1 interpolated state points) - znew
                 abs(zi[1] + h[i]*sum(Omega[j,m]*fnew[j] for j in eachindex(tau)) - znew[m])
                 for m in eachindex(tau)
-            ) / (1 + maximum(abs, zsol))
+            ) / (1 + maximum(abs, zi))
         end
         for i in eachindex(h)
     ]
 end
 # NOTE: this error estimation is cheap because we already obtained the 
 # polynomial coefficients (the discretized states) from solving the NLP
-# so this is just an O(N) calculation, N = num. intervals
 
 
 # ----- Mesh update -----
@@ -109,8 +107,8 @@ function find_new_nodes(model, err; floor_frac = 0.1, passes = 2)
     end
 
     # invert cumulative mass to convert density to new node placement (?)
-    W = cumsum([0.0; rho .* h])                # W[i]: monitor mass left of nodes[i]
-    new = collect(float.(nodes))               # the horizon ends stay put
+    W = cumsum([0.0; rho .* h])
+    new = collect(float.(nodes))
     for m in 2:N
         target = W[end] * (m - 1) / N
         i = clamp(searchsortedlast(W, target), 1, N)
@@ -225,7 +223,7 @@ function colorbar_strip(clims; rows = 256)
         xticks = false, ymirror = true, tickfontsize = 11,
         yticks = (decades, ["1e$(Int(d))" for d in decades]),
         title = "|z_exact - z|", titlefontsize = 12,
-        right_margin = 8Plots.mm,
+        right_margin = 4Plots.mm,
     )
 end
 
@@ -238,11 +236,12 @@ function plot_mesh_history(history, exact)
     return scatter(
         t, iteration;
         marker_z = reduce(vcat, err), c = :jet, clims = clims,
-        markersize = 5, markerstrokewidth = 0, legend = false, colorbar = false,
-        xlabel = "t", ylabel = "r-iter", guidefontsize = 14,
+        markersize = 7, markerstrokewidth = 0, legend = false, colorbar = false,
+        xlabel = "t", ylabel = "r-iter", guidefontsize = 16, yguidefontsize = 18,
+        tickfontsize = 12,
         xlims = (0.0, TEND), ylims = (-0.5, length(history) - 0.5),
         yticks = 0:(length(history) - 1),
-        title = "r-refinement: node placement per iteration",
+        title = "r-refinement: node placement per iteration", titlefontsize = 18,
         right_margin = 5Plots.mm,
     )
 end
@@ -258,7 +257,10 @@ function plot_solution_3d(history, exact)
         zlims = (zfloor, maximum(zall)),
         yticks = 0:(length(history) - 1),
         legend = false, camera = (17.5, 15), colorbar = false,
+        projection_type = :perspective,
         title = "r-refinement: state trajectory per iteration",
+        left_margin = -14Plots.mm, right_margin = -6Plots.mm,
+        top_margin = -14Plots.mm, bottom_margin = -14Plots.mm,
     )
 
     for (it, (s, err)) in enumerate(zip(history, errs))
