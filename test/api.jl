@@ -501,6 +501,31 @@ end
     end
 end
 
+@testset "a point at tau = 1 collapses the junction row" begin
+    # Radau and Lobatto make continuity z[i,K] = z[i+1,0], two nonzeros and no b-sum, where
+    # Legendre keeps the sum at K + 2. The row count is the same either way.
+    N, K = 5, 3
+
+    function junction_nnzj(basis, roots)
+        core = CollocationExaCore(range(0.0, TF; length = N + 1), K; basis, roots)
+        @add_var_collocation(core, z)
+        mesh_t = core.mesh.t
+        itr = [(i, k, mesh_t[i, k]) for i in 1:N, k in 1:K]
+        @add_con_collocation(core, coll, z, -z[i, k] for (i, k, t) in itr)
+
+        nnzj = core.nnzj
+        @add_con_continuity(core, cont, z)
+        @test core.ncon == N * K + (N - 1)
+        return (core.nnzj - nnzj) ÷ (N - 1)
+    end
+
+    @testset "$(nameof(typeof(b)))" for b in (StateForm(), DerivativeForm())
+        @test junction_nnzj(b, GaussRadau()) == 2
+        @test junction_nnzj(b, GaussLegendre()) == K + 2
+    end
+    @test junction_nnzj(DerivativeForm(), GaussLobatto()) == 2
+end
+
 @testset "two leading dimensions" begin
     # The stencils have a branch per leading-dimension count, and one call covers every slot.
     N, K, Nz, Nc = 5, 3, 2, 3

@@ -47,6 +47,14 @@ function add_con_continuity(
     # One junction row per slot and interval boundary, either way. Which junctions is the
     # mode's business, so they are crossed in here.
     rows = vec([(d..., i) for d in slots, i in 1:(N - 1)])
+
+    # Radau and Lobatto collocate tau = 1, so the row is z[...,i,K] = z[...,i+1,0]
+    if last(w.taus) == 1
+        return ExaModels.add_con(
+            core, Base.Generator(_cardinal_base(z, nlead, K), rows); name = name, kwargs...,
+        )
+    end
+
     base = _isstateform(core) ? _continuity_base(z, nlead) : _junction_base(z, nlead)
     core, con = ExaModels.add_con(
         core, Base.Generator(base, rows); name = name, kwargs...,
@@ -104,6 +112,13 @@ function _covered_slots(res, z, who::Symbol)
 end
 
 _slotstr(s) = isempty(s) ? "the block" : "z[$(join(s, ", "))]"
+
+# z[zdims..., i, K] - z[zdims..., i+1, 0], off a junction row (zdims..., i)
+_cardinal_base(z, nlead, K) = nlead == 0 ?
+    (r -> z[r[1], K] - z[r[1] + 1, 0]) :
+    nlead == 1 ?
+    (r -> z[r[1], r[2], K] - z[r[1], r[2] + 1, 0]) :
+    (r -> z[r[1], r[2], r[3], K] - z[r[1], r[2], r[3] + 1, 0])
 
 # -z[zdims..., i+1, 0], off a junction row (zdims..., i); the b-sum rides on the stencil
 _continuity_base(z, nlead) = nlead == 0 ?
