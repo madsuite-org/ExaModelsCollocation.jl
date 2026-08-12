@@ -148,6 +148,22 @@ opposite**: `offset0(::Constraint, i)` and `_constraint_dims(::Constraint)` are 
 and `core.cons` *is* read in the evaluator hot loop, so `add_con_collocation` returns the plain
 `Constraint` and the record stays a separate `Residual`. Do not wrap it.
 
+**`Residual.f` called on a row of `Int`s is a numeric right-hand side**, and that is why a second,
+numeric one is not stored beside it. Indexing resolves `z[s…,i,k]` to a `Var` carrying its
+*absolute* index, so the result is a node over concrete leaves — `node(nothing, x, θ)` evaluates
+it, and `z[s…,i,k].i` is the `x` index to write, with no offset arithmetic to redo. Everything the
+expression reads that is not a state comes back at its solved value, which a closure stored at
+`add_con_collocation` time could not have captured: in `ExaModelsPEtab.jl/src/nlp/collocation.jl`
+the expression reads `p`, so a numeric field would need the problem-specific signature
+`f(zvals, pvals, cvvals, gvals, t)`. To read `f` *off* the collocation points — what an error
+estimate needs — doctor copies of `x` and `θ` at one scratch `k`; `examples/r_refinement.jl` does
+exactly this. Four traps: an autonomous `f` on a numeric mesh traces to a plain `Real`, not a node;
+every block must be moved to the new point before any residual is evaluated, since one expression
+reads the whole state vector at its point; under Lobatto the `k = 1` coefficient sits on the `k = 0`
+node, so an interpolation over both divides by zero and must drop one; and `r.rows` is
+`slots × N × K` long, so a row lookup that scans it is quadratic in the mesh — key it once into a
+`Dict`.
+
 `_split_collocation_args` accepts both `f(a; k = v)` and `f(a, k = v)` — reuse it for new macros.
 
 ## The adaptive mesh
