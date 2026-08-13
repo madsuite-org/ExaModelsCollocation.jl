@@ -1,7 +1,7 @@
 """
     ExaModelsCollocation
 
-Helper functions for implementing orthogonal collocation in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl).
+Helper functions for orthogonal collocation in [ExaModels.jl](https://github.com/exanauts/ExaModels.jl).
 """
 module ExaModelsCollocation
 
@@ -16,14 +16,13 @@ for file in [
         "collocation/mesh",
         "core/handles",
         "core/core",
+        "api/macros",
+        "api/add_var_collocation",
+        "api/add_con_collocation",
+        "api/add_con_continuity",
     ]
     include("$file.jl")
 end
-
-include("add_var_collocation.jl")
-include("add_con_collocation.jl")
-include("add_con_continuity.jl")
-
 
 export CollocationExaCore, CollocationExaModel, CollocationVariable, Collocation
 export add_var_collocation, @add_var_collocation

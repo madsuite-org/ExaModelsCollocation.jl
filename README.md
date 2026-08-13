@@ -2,6 +2,8 @@
 
 Helper functions for orthogonal collocation in [ExaModels.jl](https://github.com/madsuite-org/ExaModels.jl).
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/madsuite-org/ExaModelsCollocation.jl/blob/main/LICENSE) [![CI](https://github.com/madsuite-org/ExaModelsCollocation.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/madsuite-org/ExaModelsCollocation.jl/actions/workflows/CI.yml)
+
 ### Feature Summary
 - `CollocationExaCore` : an `ExaCore` containing collocation metadata
 - `add_var_collocation`/`@add_var_collocation` : creates variable over every collocation point
@@ -18,7 +20,8 @@ Refer to `examples/*` for complete examples.
 CollocationExaCore(nodes, K; roots = GaussRadau(), basis = StateForm(), 
   polynomial = Lagrange(), adaptive = false, kwargs...)
 ```
-Creates an intermediate data object `ExaCore`, which contains collocation metadata used by collocation helper functions.
+Creates an intermediate data object `CollocationExaCore`, which contains collocation 
+metadata used by collocation helper functions.
 
 ### Arguments
 - `nodes` : interval boundary placements for `N+1` boundaries for `N` intervals
@@ -57,7 +60,7 @@ julia> core = ExaCore(core; tag = Collocation(nodes, 3)) # also works
 set_nodes!(model, nodes)
 ```
 
-Relocates the placement of `nodes` of a `CollocationExaCore` model, given `adaptive = true`.
+Relocates the placement of `nodes` of a `CollocationExaModel`, given `adaptive = true`.
 
 ---
 
