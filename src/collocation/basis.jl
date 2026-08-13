@@ -33,9 +33,9 @@ struct DerivativeForm <: AbstractBasis end
 Contains the collocation and continuity weights
 
 # Fields
-- `A`: collocation constraint weights A[j,k], j=0,...,K,
-- `b`: continuity constraint weights b[j], j=0,...,K.
-- `taus` : true collocation points taus[j], j=1,...,K.
+- `A`: collocation constraint weights A[j,k], j=0,…,K,
+- `b`: continuity constraint weights b[j], j=0,…,K.
+- `taus` : true collocation points taus[j], j=1,…,K.
 """
 struct BasisWeights{T, MA <: AbstractMatrix{T}, VB <: AbstractVector{T}, VT <: AbstractVector{T}}
     A::MA

@@ -8,7 +8,7 @@
     AbstractRoots
 
 Abstract type for collocation point families. A concrete subtype contains the `K` true
-collocation points tau_j, for j = 1,...,K. tau_0 = 0 is added per basis in basis.jl.
+collocation points tau_j, for j = 1,…,K. tau_0 = 0 is added per basis in basis.jl.
 """
 abstract type AbstractRoots end
 
