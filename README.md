@@ -22,19 +22,21 @@ Creates an intermediate data object `ExaCore`, which contains collocation metada
 
 ### Arguments
 - `nodes` : interval boundary placements for `N+1` boundaries for `N` intervals
-- `K` : degree of interpolating polynomial
+- `K`     : degree of interpolating polynomial
 
 ### Keyword Arguments
-- `roots` : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
-- `basis` : differential-state representation, `StateForm()` or `DerivativeForm()`
+- `roots`      : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
+- `basis`      : differential-state representation, `StateForm()` or `DerivativeForm()`
 - `polynomial` : interpolating polynomial, `Lagrange()`
-- `adaptive` : whether interval widths are mutable `ExaModels` parameters
+- `adaptive`   : whether interval widths are mutable `ExaModels` parameters
 - remaining kwargs passed on to `ExaCore`: `backend`, `minimize`, `name`
 
-### Properties
-- `mode` : `roots`, `basis`, `polynomial`, `weights`
-- `mesh` : `nodes`, `h` interval lengths, `t` time
-- `blocks` : `CollocationVariable` dimensions
+### Fields
+- `mode`  : `roots`, `basis`, `polynomial`, `weights`
+- `mesh`  : `nodes`, `h` interval lengths, `t` time
+- `block` : `CollocationVariable` dimensions
+- `resid` : `CollocationVariable` right-hand side functions
+- `N`, `K`, `nodes`, `adaptive`
 
 ### Example
 ```julia
@@ -47,13 +49,15 @@ julia> core = ExaCore(concrete = Val(true); tag = Collocation(nodes, 3)) # also 
 julia> core = ExaCore(core; tag = Collocation(nodes, 3)) # also works
 ```
 
-### `set_nodes!`
+---
+
+## `set_nodes!`
 
 ```julia
 set_nodes!(model, nodes)
 ```
 
-Relocates the placement of `nodes` if `adaptive = true` for a `CollocationExaCore` model.
+Relocates the placement of `nodes` of a `CollocationExaCore` model, given `adaptive = true`.
 
 ---
 
