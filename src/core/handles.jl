@@ -1,6 +1,4 @@
-# ExaModels indexes generically over AbstractVariable (.size, .offset, .length), so a subtype
-# carrying the collocation layout indexes like a Variable and needs no side table.
-
+# CollocationVariable things
 """
     CollocationVariable
 
@@ -27,6 +25,45 @@ CollocationVariable(v::ExaModels.Variable, dims, krange::UnitRange{Int}) =
 # Leading dimensions the caller declared; the mesh indices (i, k) are the rest.
 _nleading(z::CollocationVariable) = length(z.dims)
 
+"""
+    CollocationSlot
+
+One slot of a [`CollocationVariable`](@ref), from indexing it by its declared dimensions alone.
+[`add_con_collocation`](@ref) reads its target off one of these.
+
+# Fields
+- `var` : the block
+- `idx` : the declared indices, as row entries or literals
+"""
+struct CollocationSlot{V, I}
+    var::V
+    idx::I
+end
+
+Base.show(io::IO, s::CollocationSlot) =
+    print(io, "CollocationSlot ", s.var.name, "[", join(s.idx, ", "), "]")
+
+# Dimensions alone name a slot, dimensions plus the mesh indices a coefficient. The two arities
+# never collide, a full index being `length(dims) + 2` long.
+Base.getindex(z::CollocationVariable, idx...) = _index_collocation(z, idx)
+Base.getindex(z::CollocationVariable, i) = _index_collocation(z, (i,))
+Base.getindex(z::CollocationVariable, ::Colon) = _index_collocation(z, (:,))
+
+function _index_collocation(z::CollocationVariable, idx)
+    any(i -> i isa Colon, idx) && return _exaindex(z, idx)
+
+    n, nd = length(idx), length(z.dims)
+    n == nd && return CollocationSlot(z, idx)
+    n == nd + 2 || throw(ArgumentError(
+        "$(z.name): a collocation block takes $nd $(nd == 1 ? "index" : "indices") for one of " *
+        "its slots or $(nd + 2) with the mesh, got $n"
+    ))
+    return _exaindex(z, idx)
+end
+
+_exaindex(z, idx) =
+    invoke(Base.getindex, Tuple{ExaModels.AbstractVariable, Vararg{Any}}, z, idx...)
+
 function Base.show(io::IO, z::CollocationVariable)
     print(
         io,
@@ -38,8 +75,7 @@ function Base.show(io::IO, z::CollocationVariable)
     )
 end
 
-# ExaModels' bound accessors dispatch on ::Variable, so they need methods here. Indexing and
-# `solution` are generic or duck-typed, and need none.
+# ExaModels utilities for CollocationVariables
 _var_range(z::CollocationVariable) = (z.offset + 1):(z.offset + z.length)
 
 ExaModels.get_start(m::ExaModels.ExaModel, z::CollocationVariable) =

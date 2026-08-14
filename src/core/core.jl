@@ -1,42 +1,34 @@
-# The discretization rides in the core's `tag`, so a collocation core IS an ExaCore: every
-# ExaModels.add_* works on it unforwarded, and ExaModel(core) carries the tag over, which is
-# what keeps the mesh reachable after a solve. Same construction as ExaModels' own two-stage
-# extension (two_stage.jl).
-#
-#   mode : tau-space  (roots, basis, polynomial, weights)
-#   mesh : t-space    (nodes, h, t, parameter handles)
-#
-# blocks and residuals grow in place, as two_stage.jl grows var_scen, so the tag's type is
-# fixed once. ExaCore does the same with x0 and lvar.
-
+# CollocationExaCore things
 """
     Residual
 
-The right-hand side one [`add_con_collocation`](@ref) call was given, recorded so
-[`add_con_continuity`](@ref) knows which slots were collocated and, under `DerivativeForm`,
-integrates the same `f`.
+Contains [`add_con_collocation`](@ref) call details.
 
 # Fields
-- `var`   : the variable it collocates
-- `rows`  : the iterator rows it was built over, `(z's indices…, …, i, k, t)`
-- `f`     : the right-hand side, evaluated on one of those rows
-- `slots` : the distinct slots of `var` those rows cover
+- `var` : the `CollocationVariable` that was collocated
+- `f` : right-hand side function expression
+- `fiter` : the full iterator used by `f`
+- `fwhich` : the `CollocationVariable` indicies that were collocated
+- `fwhere` : where `dims...`, `i`, `k` are located in `fiter`
 """
-struct Residual{V, R, F, S}
+struct Residual{V, F, I, W, L}
     var::V
-    rows::R
     f::F
-    slots::S
+    fiter::I
+    fwhich::W
+    fwhere::L
 end
 
 """
     CollocationMode
 
-Reference-interval discretization, independent of where the intervals sit along `t`.
+Contains details on what method of collocation is used.
 
 # Fields
-- `roots`, `basis`, `polynomial` : the mode
-- `weights` : `A`, `b`, `taus`
+- `roots`      : collocation family, `GaussRadau()`, `GaussLendgre()`, or `GaussLobatto()`
+- `basis`      : differential-state representation, `StateForm()` or `DerivativeForm`
+- `polynomial` : interpolating polynomial, `Lagrange()`
+- `weights`    : `A`, `b`, `taus`
 """
 struct CollocationMode{R <: AbstractRoots, B <: AbstractBasis, P <: AbstractPolynomial, W <: BasisWeights}
     roots::R
@@ -48,35 +40,32 @@ end
 """
     CollocationTag
 
-The discretization a [`CollocationExaCore`](@ref) carries in its `tag`. Build one with
-[`Collocation`](@ref).
+The collocation metadata a [`CollocationExaCore`](@ref) carries in its `tag`. 
+Built with [`Collocation`](@ref).
 
 # Fields
-- `mode` : [`CollocationMode`](@ref)
-- `mesh` : [`CollocationMesh`](@ref)
-- `blocks` : every [`CollocationVariable`](@ref) allocated on the core
-- `residuals` : every [`Residual`](@ref) recorded by [`add_con_collocation`](@ref)
+- `mode`  : [`CollocationMode`](@ref)
+- `mesh`  : [`CollocationMesh`](@ref)
+- `block` : every [`CollocationVariable`](@ref) dimensions
+- `resid` : every [`Residual`](@ref) recorded by [`add_con_collocation`](@ref)
 """
 struct CollocationTag{MO <: CollocationMode, ME <: CollocationMesh} <: ExaModels.AbstractExaModelTag
     mode::MO
     mesh::ME
-    blocks::Vector{Any}
-    residuals::Vector{Residual}
+    block::Vector{Any}
+    resid::Vector{Residual}
 end
 
 """
-    Collocation(nodes, K; roots = GaussRadau(), basis = StateForm(), polynomial = Lagrange())
+    Collocation(nodes, K; kwargs...)
 
-The discretization, as an `ExaCore` tag. `nodes` are the `N+1` interval boundaries and `K`
-the degree of the interpolating polynomial.
+Contains collocation metadata as an `ExaCore` tag.
 
-[`CollocationExaCore`](@ref) is the usual way in and takes these same keywords. Pass this
-directly to build the core by hand, or to attach a mesh to one that already holds variables:
-
+# Example
 ```julia
-julia> core = ExaCore(concrete = Val(true); tag = Collocation(nodes, 3));
+julia> core = ExaCore(concrete = Val(true); tag = Collocation(nodes, 3))
 
-julia> core = ExaCore(core; tag = Collocation(nodes, 3));   # keeps what core already holds
+julia> core = ExaCore(core; tag = Collocation(nodes, 3))
 ```
 """
 function Collocation(
@@ -87,71 +76,71 @@ function Collocation(
         polynomial::AbstractPolynomial = Lagrange(),
     )
     length(nodes) >= 2 ||
-        throw(ArgumentError("nodes needs at least 2 interval boundaries, got $(length(nodes))"))
+        throw(ArgumentError("nodes requires at least 2 interval boundaries, got $(length(nodes))"))
     K >= 1 || throw(ArgumentError("K must be at least 1, got $K"))
 
-    # polynomial.jl: only Lagrange interpolation is implemented
-    polynomial isa Lagrange ||
-        throw(ArgumentError("Only Lagrange interpolation polynomials are supported currently."))
+    bounds = collect(float.(nodes))
+    all(>(0), diff(bounds)) ||
+        throw(ArgumentError("nodes must be strictly increasing along t"))
 
-    # taus.jl: Lobatto's K points include both endpoints, so there are none to place below K = 2
+    # polynomial.jl: only Lagrange polynomial is implemented
+    polynomial isa Lagrange ||
+        throw(ArgumentError("Only Lagrange interpolation polynomials supported currently"))
+
+    # taus.jl: Lobatto must include both endpoints so at least K = 2 required
     roots isa GaussLobatto && K < 2 &&
         throw(ArgumentError("GaussLobatto requires K ≥ 2, got $K"))
 
-    # taus.jl / basis.jl: GaussLobatto puts a collocation point on tau = 0, which collides
-    # with the tau0 = 0 anchor StateForm prepends -- repeated nodes give NaN barycentric
-    # weights. DerivativeForm needs no anchor, so it is the only basis Lobatto admits.
-    roots isa GaussLobatto && basis isa StateForm && throw(ArgumentError(
-        "GaussLobatto collocates tau = 0, which StateForm cannot anchor; " *
-        "pass `basis = DerivativeForm()`."
-    ))
-
-    bnds = collect(float.(nodes))
-    # A repeated boundary would be a zero-width interval, whose collocation rows are degenerate
-    issorted(bnds; lt = <=) ||
-        throw(ArgumentError("nodes must be strictly increasing along t"))
+    # basis.jl: StateForm cant collocate at tau = 0, but Lobatto has tau1 = 0
+    roots isa GaussLobatto && basis isa StateForm &&
+        throw(ArgumentError("GaussLobatto requires basis = DerivativeForm(), got $basis"))
 
     # taus.jl: the K collocation points; basis.jl: collocation/continuity weights A, b
     taus = _get_taus(roots, K)
     mode = CollocationMode(roots, basis, polynomial, _get_weights(polynomial, basis, taus))
-    return CollocationTag(mode, _get_mesh(bnds, taus), [], Residual[])
+    return CollocationTag(mode, _get_mesh(bounds, taus), [], Residual[])
 end
 
 """
     CollocationExaCore{T,VT,B}
 
-An `ExaCore` whose `tag` is a [`CollocationTag`](@ref). Every `ExaModels.add_*` works on it
-unchanged, so a model mixes plain ExaModels calls with collocation ones on one object.
+Type alias for an `ExaCore` whose `tag` is a [`CollocationTag`](@ref).
 
-    CollocationExaCore([array_eltype::Type,] nodes, K; roots = GaussRadau(),
-                       basis = StateForm(), polynomial = Lagrange(), adaptive = false,
-                       backend = nothing, minimize = true, name = :Generic)
+    CollocationExaCore(
+        [array_eltype::Type,] nodes, K; 
+        roots = GaussRadau(),
+        basis = StateForm(), 
+        polynomial = Lagrange(), 
+        adaptive = false,
+        kwargs...
+    )
 
-`nodes` are the `N+1` interval boundaries and `K` the degree of the interpolating polynomial.
+Creates an intermediate data object `CollocationExaCore`, which contains collocation metadata
+used by collocation helper functions.
 
-## Keyword Arguments
-- `roots` : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
-- `basis` : differential-state representation, `StateForm()` or `DerivativeForm()`
-- `polynomial` : interpolating polynomial, `Lagrange()` only, so it is left at the default
-- `adaptive` : allocate `h` and `t` as parameter blocks, so the mesh moves between solves
-  without rebuilding. Costs `N·K + N` parameters and traces `h` symbolically.
-- `backend`, `minimize`, `name` : passed on to `ExaCore`
+# Arguments
+- `nodes` : interval boundary placements for `N+1` boundaries for `N` intervals
+- `K`     : degree of interpolating polynomial
 
-`roots`, `basis` and `polynomial` are [`Collocation`](@ref)'s, and this is sugar over
-`ExaCore(T; tag = Collocation(nodes, K; …))`. `adaptive` is not: it allocates parameter
-blocks, so it needs a core and is only available here.
+# Keyword Arguments
+- `roots`      : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
+- `basis`      : differential-state representation, `StateForm()` or `DerivativeForm()`
+- `polynomial` : interpolating polynomial, `Lagrange()`
+- `adaptive`   : whether interval widths are mutable `ExaModels` parameters
+- remaining kwargs passed on to `ExaCore`: `backend`, `minimize`, `name`
 
-## Properties
-`core.mode`, `core.mesh`, `core.blocks`, `core.residuals`, and derived `core.N`, `core.K`,
-`core.nodes`, `core.adaptive`, `core.roots`, `core.basis`, `core.polynomial`, `core.weights`.
-All of them read the same way off the [`CollocationExaModel`](@ref) the core builds.
+# Fields
+- `mode`  : `roots`, `basis`, `polynomial`, `weights`
+- `mesh`  : `nodes`, `h` interval lengths, `t` time
+- `block` : `CollocationVariable` dimensions
+- `resid` : `CollocationVariable` right-hand side functions
+- `N`, `K`, `nodes`, `adaptive`
 
-## Example
+# Example
 ```julia
-julia> core = CollocationExaCore(range(0.0, 5.0; length = 21), 3);
+julia> nodes = range(0.0, 5.0; length = 21) # 21 interval boundary placements
 
-julia> core.N, core.K
-(20, 3)
+julia> core = CollocationExaCore(nodes, 3) # N=20, K=3
 ```
 """
 const CollocationExaCore{T, VT, B} = ExaCore{T, VT, B, <:CollocationTag}
@@ -159,14 +148,14 @@ const CollocationExaCore{T, VT, B} = ExaCore{T, VT, B, <:CollocationTag}
 """
     CollocationExaModel{T,VT,E,V,P,O,C,R}
 
-The `ExaModel` a [`CollocationExaCore`](@ref) builds. It carries the same tag, so `model.mesh`
-and `model.z` read exactly as they do on the core.
+Type alias for an `ExaModel` built from a [`CollocationExaCore`](@ref).
 """
 const CollocationExaModel{T, VT, E, V, P, O, C, R} = ExaModels.ExaModel{T, VT, E, V, P, O, C, <:CollocationTag, R}
 
 CollocationExaCore(nodes::AbstractVector, K::Integer; backend = nothing, kwargs...) =
     CollocationExaCore(ExaModels.default_T(backend), nodes, K; backend, kwargs...)
 
+# Construct CollocationExaCore
 function CollocationExaCore(
         ::Type{T},
         nodes::AbstractVector,
@@ -177,10 +166,10 @@ function CollocationExaCore(
         adaptive::Bool = false,
         kwargs...,
     ) where {T <: AbstractFloat}
-    # A LegacyExaCore would match neither the alias nor its getproperty methods.
+
     haskey(kwargs, :concrete) && throw(ArgumentError(
-        "CollocationExaCore: `concrete` is always Val(true); the mutable LegacyExaCore " *
-        "cannot carry a collocation tag."
+        "CollocationExaCore: `concrete` is always Val(true)." *
+        "LegacyExaCore not supported."
     ))
 
     tag = Collocation(nodes, K; roots, basis, polynomial)
@@ -188,54 +177,45 @@ function CollocationExaCore(
     return adaptive ? _make_adaptive(core) : core
 end
 
-# h and t as parameter blocks, which is what lets a residual index them with a traced index
-# and lets set_nodes! move the mesh without rebuilding. The numeric arrays stay as they are.
+# `adaptive = true` build path
 function _make_adaptive(core)
     tag, mesh = _tag(core), _mesh(core)
-    core, hp = ExaModels.add_par(core, 1:length(mesh.h); value = mesh.h)
-    core, tp = ExaModels.add_par(core, 1:size(mesh.t, 1), 1:size(mesh.t, 2); value = mesh.t)
+    h, t = _hval(mesh), _tval(mesh)
+    core, hp = ExaModels.add_par(core, 1:length(h); value = h)
+    core, tp = ExaModels.add_par(core, 1:size(t, 1), 1:size(t, 2); value = t)
     return ExaCore(
         core;
         tag = CollocationTag(
-            tag.mode, _with_parameters(mesh, hp, tp), tag.blocks, tag.residuals,
+            tag.mode, _with_parameters(mesh, hp, tp), tag.block, tag.resid,
         ),
     )
 end
 
-# ---------- internal accessors ----------
+# ---------- helper functions ----------
+
 _tag(c) = getfield(c, :tag)
 _mesh(c) = _tag(c).mesh
 _mode(c) = _tag(c).mode
 _weights(c) = _mode(c).weights
+_nintervals(c) = length(_hval(_mesh(c)))
 _degree(c) = length(_weights(c).taus)
 
-# Number of intervals, N = length(nodes) - 1
-_nintervals(c) = length(_mesh(c).h)
+_hval(m::CollocationMesh) = getfield(m, :h)
+_tval(m::CollocationMesh) = getfield(m, :t)
+_hpar(m::CollocationMesh) = getfield(m, :hpar)
+_tpar(m::CollocationMesh) = getfield(m, :tpar)
 
-# Which residual form the add_con_* helpers build (Biegler 10.7/10.14a vs 10.8/10.15a)
 _isstateform(c) = _mode(c).basis isa StateForm
-
-# Whether h and t are parameter handles rather than numbers. The add_con_* helpers branch on
-# this the way they branch on _isstateform: it changes where the interval width comes from,
-# not which equation is built.
-_isadaptive(c) = _mesh(c).hpar !== nothing
-
-# Mesh entries a caller's iterator row ends in: (i, k, t) numerically, (i, k) adaptively,
-# since t is then a parameter the right-hand side indexes rather than data in the row.
-_nmesh(c) = _isadaptive(c) ? 2 : 3
+_isadaptive(c) = _hpar(_mesh(c)) !== nothing
 
 """
-    set_nodes!(core_or_model, nodes)
+    set_nodes!(model, nodes)
 
-Moves the mesh to new interval boundaries, on a core or model built with `adaptive = true`.
-Recomputes `h` and `t` and writes both through, so the model is re-solved without rebuilding.
-
-`nodes` must have the same length it was built with: redistributing a fixed number of
-intervals needs no rebuild, adding one changes the variable count and does.
+Relocates the placement of `nodes` of a `CollocationExaModel`, given `adaptive = true`.
 """
 function set_nodes!(c, nodes::AbstractVector)
     mesh = _mesh(c)
-    mesh.hpar === nothing && throw(ArgumentError(
+    _hpar(mesh) === nothing && throw(ArgumentError(
         "set_nodes!: this mesh is not adaptive; build it with `adaptive = true`"
     ))
     length(nodes) == length(mesh.nodes) || throw(DimensionMismatch(
@@ -246,14 +226,15 @@ function set_nodes!(c, nodes::AbstractVector)
         throw(ArgumentError("set_nodes!: nodes must be strictly increasing along t"))
 
     taus = _weights(c).taus
+    h, t = _hval(mesh), _tval(mesh)
     copyto!(mesh.nodes, nodes)
-    mesh.h .= diff(mesh.nodes)
-    for i in axes(mesh.t, 1), j in axes(mesh.t, 2)
-        mesh.t[i, j] = mesh.nodes[i] + mesh.h[i] * taus[j]
+    h .= diff(mesh.nodes)
+    for i in axes(t, 1), j in axes(t, 2)
+        t[i, j] = mesh.nodes[i] + h[i] * taus[j]
     end
 
-    _set_mesh_parameter!(c, mesh.hpar, mesh.h)
-    _set_mesh_parameter!(c, mesh.tpar, mesh.t)
+    _set_mesh_parameter!(c, _hpar(mesh), h)
+    _set_mesh_parameter!(c, _tpar(mesh), t)
     return nothing
 end
 
@@ -262,11 +243,11 @@ _set_mesh_parameter!(c::CollocationExaCore, p, values) =
 _set_mesh_parameter!(m::CollocationExaModel, p, values) =
     ExaModels.set_value!(m, p, values)
 
-_addblock(c::CollocationExaCore, z::CollocationVariable) = (push!(_tag(c).blocks, z); c)
-_addresidual(c::CollocationExaCore, res::Residual) = (push!(_tag(c).residuals, res); c)
+_addblock(c::CollocationExaCore, z::CollocationVariable) = (push!(_tag(c).block, z); c)
+_addresidual(c::CollocationExaCore, res::Residual) = (push!(_tag(c).resid, res); c)
 
 # The residuals recorded for a variable, in the order they were added
-_residuals(c::CollocationExaCore, var) = [r for r in _tag(c).residuals if r.var === var]
+_residuals(c::CollocationExaCore, var) = [r for r in _tag(c).resid if r.var === var]
 
 # Swap the handle a helper wrapped back into the core, so `core.z` and `model.z` give the
 # CollocationVariable rather than the bare Variable add_var registered.
@@ -287,8 +268,8 @@ function _block_layout(c::CollocationExaCore, z, who::Symbol)
 
     K = _degree(c)
     z.krange == 0:K || throw(ArgumentError(
-        "$who: that block was created with include_boundary = false, so it has no k = 0 " *
-        "boundary node; the collocation stencil needs one."
+        "$who: cannot create collocation constraints for a CollocationVariable created with " *
+        "include_boundary = false."
     ))
 
     nlead = _nleading(z)
@@ -300,10 +281,11 @@ function _block_layout(c::CollocationExaCore, z, who::Symbol)
 end
 
 # ---------- property forwarding ----------
+
 # The tag's contents and the quantities derived from them read flat off either the core or
 # the model, which both carry the same tag.
 const _MODE_FIELDS = (:roots, :basis, :polynomial, :weights)
-const _TAG_FIELDS = (:mode, :mesh, :blocks, :residuals)
+const _TAG_FIELDS = (:mode, :mesh, :block, :resid)
 
 # The alias drops ExaCore's own `VT <: AbstractVector{T}` bound, which leaves these ambiguous
 # with ExaModels' getproperty over `E <: Union{ExaCore, ExaModel}`. Restating it in the where
@@ -318,10 +300,10 @@ function _getprop(c, name::Symbol)
 
     tag = _tag(c)
     name in _TAG_FIELDS && return getfield(tag, name)
-    name === :N && return length(tag.mesh.h)
+    name === :N && return length(_hval(tag.mesh))
     name === :K && return length(tag.mode.weights.taus)
     name === :nodes && return tag.mesh.nodes
-    name === :adaptive && return tag.mesh.hpar !== nothing
+    name === :adaptive && return _hpar(tag.mesh) !== nothing
     name in _MODE_FIELDS && return getfield(tag.mode, name)
 
     refs = getfield(c, :refs)
@@ -348,7 +330,7 @@ function _show_collocation(io::IO, c, header)
     tag = _tag(c)
     nodes = tag.mesh.nodes
     vars = join(
-        ["$(b.name)[$(join((b.dims..., "i", "k=$(b.krange)"), ", "))]" for b in tag.blocks],
+        ["$(b.name)[$(join((b.dims..., "i", "k=$(b.krange)"), ", "))]" for b in tag.block],
         ", ",
     )
     print(
@@ -356,7 +338,7 @@ function _show_collocation(io::IO, c, header)
         """
         $header
 
-          mesh    N = $(length(tag.mesh.h)) intervals, K = $(length(tag.mode.weights.taus)) degree$(tag.mesh.hpar === nothing ? "" : ", adaptive")
+          mesh    N = $(length(_hval(tag.mesh))) intervals, K = $(length(tag.mode.weights.taus)) degree$(_hpar(tag.mesh) === nothing ? "" : ", adaptive")
           horizon [$(first(nodes)), $(last(nodes))]
           mode    $(tag.mode.basis), $(tag.mode.polynomial), $(tag.mode.roots)
           vars    $(isempty(vars) ? "-" : vars)
