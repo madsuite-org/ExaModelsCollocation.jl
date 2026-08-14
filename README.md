@@ -6,9 +6,11 @@ Helper functions for orthogonal collocation in [ExaModels.jl](https://github.com
 
 ### Feature Summary
 - `CollocationExaCore` : an `ExaCore` containing collocation metadata
+- `set_nodes!` : relocate mesh node placeemnts
 - `add_var_collocation`/`@add_var_collocation` : creates variable over every collocation point
 - `add_con_collocation`/`@add_con_collocation` : creates collocation constraints over every collocation point
 - `add_con_continuity`/`@add_con_continuity` : creates continuity constraints over every interval
+- `interpolate` : evaluates interpolating polynomials at any time in the mesh
 
 Refer to `examples/*` for complete examples.
 
@@ -134,8 +136,8 @@ julia> c, rate = ExaModels.add_var(c, 1:Nz)
 julia> itr = [(v, exp) for v in 1:Nz, exp in 1:Nexp]
 
 julia> c, coll = add_con_collocation(c, 
-           z[v,exp] => -rate[v]*z[v,exp] + rate[v]*cos(t) # right-hand side function expression added for z[v,exp], can use t
-           for (v, exp) in itr) # automatically iterated over all N,K with t included
+           z[v,exp] => -rate[v]*z[v,exp,i,k] + rate[v]*cos(t) # right-hand side function expression added for z[v,exp]
+           for (v, exp, i, k, t) in itr) # (i, k) appended to itr autmoatically, t also if adaptive = false
 ```
 
 ---
@@ -209,4 +211,27 @@ Accepts the same keyword arguments as `add_con_continuity`.
 ### Example
 ```julia
 julia> @add_con_continuity(c, cont, z)
+```
+
+---
+
+## `interpolate`
+
+```julia
+interpolate(model, result, z, t)
+```
+
+Evaluates the interpolating polynomial of a `CollocationVariable` at time `t`.
+
+### Arguments
+- `model`  : `CollocationExaModel`
+- `result` : solved ExaModels result
+- `z`      : `CollocationVariable` from `add_var_collocation`
+- `t`      : vector of times within the mesh
+
+### Example
+```julia
+julia> zf = interpolate(model, result, z, last(model.nodes)) # z at terminal point
+
+julia> zs = interpolate(model, result, z, range(0.0, 1.0; length = 101)) # zs across uniform mesh
 ```

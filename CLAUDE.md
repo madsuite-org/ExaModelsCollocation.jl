@@ -13,9 +13,11 @@ dimension inference, no initialization, no integrator, no solver wrapper. You as
 with `ExaModels.add_*` and reach for a helper only where collocation actually changes something.
 
 - Dependencies are **ExaModels** and **FastGaussQuadrature**. Do not add others.
-- **One file per exported function, named after it**, under `src/api/`. Do not grow past the
-  three helpers. `src/api/macros.jl` is only what all three macros share, and `test/` mirrors
-  the three source directories.
+- **One file per exported function, named after it**, under `src/api/`: the three builders
+  (`add_var_collocation`, `add_con_collocation`, `add_con_continuity`) plus `set_nodes!` and
+  `interpolate`, which move and read the mesh rather than build on it. Do not grow the builders
+  past three. `src/api/macros.jl` is only what the three macros share, and `test/` mirrors
+  the source directories.
 - Initial, terminal, and path conditions carry no collocation content — plain `ExaModels.@add_con`.
 - Keep the README short and shaped like ExaModels' own `add_var` docs. Rationale, derivations,
   and Biegler cross-references live here, in `src` comments, or in `test/`.
@@ -122,6 +124,13 @@ them for what a real caller needs, not for how a call is written.
    `CollocationVariable` given exactly its `dims`. This is what makes `z[v]`, `u[l]` and a bare
    zero-dimension block all work, and it costs nothing in the kernel. A caller writing the
    iterator out still can: `i` and `k` are read off the row when the pattern binds them.
+   A `ref` mentioning `end` or `begin` is left **as written** (`_indexonly`), since rewriting
+   `a[end]` into `_colidx(a, i, k, end)` moves `end` out of index position where it has no
+   meaning and fails with `UndefVarError`.
+   **`i`, `k` and `t` are reserved inside a right-hand side.** They name the mesh whether or
+   not the iterator binds them, so a caller's own value under one of those names is silently
+   replaced. Gensyms cannot fix it: the short iterator coexists with `z[v,i,k]` written out in
+   the body, so those names must resolve to the mesh there.
 
 `add_var` admits an `Integer` dimension as well as a `UnitRange`, so `_dimrange` normalizes them
 before the block stores them — `_covered_slots` enumerates `dims`, and over an `Integer` it would
@@ -151,10 +160,12 @@ bound in the `where` clause, as `two_stage.jl` does on every one of its methods:
 Base.getproperty(c::CollocationExaCore{T,VT,B}, name::Symbol) where {T,VT<:AbstractVector{T},B}
 ```
 
-**`block` and `resid` are `Vector`s grown in place**, so the tag's type is fixed at
-construction — as `two_stage.jl` does with `var_scen`. The consequence is real: a core and every
-core derived from it **share one tag**, so a block added to the later one is visible on the
-earlier one. Only the `ExaCore` fields are copy-on-update.
+**`block` and `resid` are `Vector`s of fixed type**, so the tag's type is fixed at
+construction — as `two_stage.jl` does with `var_scen`. They are **copied on every add**
+(`_addblock`, `_addresidual`, both through `_retag`), so a core does not report what was added
+to a sibling derived from the same parent, matching the copy-on-update the `ExaCore` fields
+already have. The **mesh stays shared**, which is what lets `set_nodes!` move it for every core
+built off it.
 
 **Named handles are not tracked here.** `add_var(c, …; name = Val(:z))` already registers into the
 inner `refs`, which `ExaModel` carries over, so `c.z` and `model.z` fall out of forwarding
@@ -164,6 +175,11 @@ inner `refs`, which `ExaModel` carries over, so `c.z` and `model.z` fall out of 
 `N`, `K`, `nodes`, `adaptive`, and the `mode` fields are **derived** through `getproperty` — do
 not add them back as stored fields. Internally use `_mesh`, `_mode`, `_weights`, `_degree`,
 `_nintervals`, and `getfield` for real fields.
+
+**`refs` is consulted before the derived names**, so a handle registered as `Val(:K)` or
+`Val(:N)` is what `c.K` and `c.N` give back. Those two are exactly what a model calls its own
+variables, and the derived name silently shadowing them was unrecoverable, since a plain
+`ExaModels.add_var(c, …; name = Val(:K))` never reaches this package.
 
 **`CollocationVariable <: ExaModels.AbstractVariable` carries its own layout** (`dims`, `krange`),
 so there is no side table and "was this created by `add_var_collocation`?" is a type check. This
@@ -185,7 +201,9 @@ estimate needs — doctor copies of `x` and `θ` at one scratch `k`; `examples/r
 exactly this. Four traps: an autonomous `f` on a numeric mesh traces to a plain `Real`, not a node;
 every block must be moved to the new point before any residual is evaluated, since one expression
 reads the whole state vector at its point; under Lobatto the `k = 1` coefficient sits on the `k = 0`
-node, so an interpolation over both divides by zero and must drop one; and `r.fiter` is
+node, so an interpolation over both divides by zero and must drop one, which is what
+`_interp_basis` in `api/interpolate.jl` does and what callers should reach for instead of
+rebuilding it; and `r.fiter` is
 `fwhich × N × K` long, so a row lookup that scans it is quadratic in the mesh — key it once into a
 `Dict`.
 
@@ -238,15 +256,26 @@ nothing else earns a file.
 
 **The whole models live in `examples/` only, and CI does not run them.** No copy of van der Pol
 or Bruno sits in `test/`, so **the Bruno objective pin is not enforced by `Pkg.test()`** and
-nothing in CI solves a problem of that size. Run the examples by hand after changing a helper,
-`refinement.jl` first: it is the only one that runs end to end, solving its own toy problem,
-reading `f` back off the recorded `Residual`, and moving the mesh with `set_nodes!`, so it
-exercises the probe, the parameter path of `t`, and the mesh naming together.
+nothing in CI solves a problem of that size. Run all three by hand after changing a helper,
+`refinement.jl` first: it is the only one that reads `f` back off the recorded `Residual` and
+moves the mesh with `set_nodes!`, so it
+exercises the probe, the parameter path of `t`, and the mesh naming together. It now calls
+`interpolate` for every evaluation off the collocation points, so its own `_blocksol` is the
+only thing left that ExaModels does not hand it: `solution()` wants a `result`, and the error
+estimate holds a raw primal vector instead.
 
-**`bruno.jl` and `vanderpol.jl` only build.** The first returns `(core, z, p, cv)` and the second
-an `ExaModel`, so nothing in the repo solves Bruno or compares its objective against `NLL_REF`.
-The driver that did was deleted along with the second copy of the r-refinement algorithm, and
-writing another is open work.
+**`test/api/interpolate.jl` reuses `solve_decay` and `MODES`** out of
+`test/api/add_con_collocation.jl` rather than rebuilding the decay problem, which is why
+`runtests.jl` includes it after. It pins the polynomial against `exp(-t)` off the mesh, against
+the stored coefficient at a node, and the returned shape against the block's declared
+dimensions.
+
+**Every example is a top-level script that solves**, so `julia --project=examples
+examples/<name>.jl` runs one end to end and no file carries a module wrapper. Each
+`examodel_<name>` returns an `ExaModel` and takes `adaptive` as a keyword defaulting to `false`,
+so the `----- Solve -----` section at the bottom reads its handles back off the model
+(`model.p`) rather than off a returned tuple. Only `refinement.jl` plots, and it is the only one
+that needs `adaptive = true`.
 
 `test/collocation/` — the mode math. Check weights against the identities that define them (a
 Lagrange weight vector applied to the nodal values of a polynomial of degree `≤ length(nodes)-1`
@@ -267,16 +296,20 @@ through them, using invariants a fixed tolerance would miss:
   come close; after `set_nodes!` the model must match one rebuilt from scratch — which is what
   catches `h` moving without `t`.
 
-**The two whole models are deliberately opposite in how they declare the state**, so both
-spellings keep working. `examples/vanderpol.jl` is **one block per state** — `z1[i,k]` with no
-declared dimensions, covering the zero-leading-dimension branch of every stencil and the
-no-iterator form, and showing the cost of splitting. `examples/bruno.jl` is **one block for
-everything**, `z[v,c,i,k]`: seven species obey four structurally distinct expressions, so four
-`@add_con_collocation` calls over disjoint slots feed a single `@add_con_continuity`. Its
+**Both whole models declare the state as one block**: `z[v,i,k]` in `examples/vanderpol.jl` and
+`z[v,c,i,k]` in `examples/bruno.jl`, with three structurally distinct expressions there and four
+here, so that many `@add_con_collocation` calls over disjoint slots feed a single
+`@add_con_continuity` in each. The **zero-leading-dimension** branch of every stencil is covered
+by `examples/refinement.jl` and `test/api/add_con_collocation.jl` instead — van der Pol's `u` is
+declared with no dimensions but is a control, so no residual is written over it. Bruno's
 `NLL_REF`, `-46.68818145`, is the negative log-likelihood PEtab.jl reports at the collection's
 nominal parameters, and matching it to `atol = 1e-6` covers the whole discretization in one
-number. **Neither runs under `Pkg.test()`**, and neither solves, so that check needs a driver
-before it is a check at all.
+number. The script prints that gap, `1.9e-8` from the nominal start on the `K = 4`, `N = 36`
+uniform Radau mesh it ships with. That gap is the printed precision of `NLL_REF` itself, not
+discretization error: `N = 36`, `72` and `180` agree on the objective to `1e-13`. The mesh has to
+be uniform on a **multiple of 36** intervals, since every measurement time is a multiple of 5 over
+`[0, 180]` and the objective reads `z[v,c,i,K]`, the right end of interval `i`. **Neither runs
+under `Pkg.test()`**, so the pin holds only when the example is run by hand.
 
 `ExaModels.solution(result, z)` returns a plain 1-based array, so a block indexed `k = 0,…,K`
 lands on `1,…,K+1` there.
@@ -284,7 +317,16 @@ lands on `1,…,K+1` there.
 ```julia
 julia --project=. -e 'using Pkg; Pkg.test()'
 julia --project=. -e 'using ExaModelsCollocation'
+julia --project=examples examples/refinement.jl
 ```
 
-Julia compat is `1.11+`, the floor ExaModels itself sets (CI tests 1.11, 1.12, and `pre`);
-ExaModels is pinned to `0.11`. Test-only dependencies go in `test/Project.toml`.
+Julia compat is `1.11+`, a floor of this package's own choosing and above what the dependencies
+ask for: ExaModels 0.12 sets `1.9` and FastGaussQuadrature `1.10`. Nothing here uses a 1.12-only
+construct, so raising it would only drop users (CI tests 1.11, 1.12, and `pre`);
+ExaModels is pinned to `0.12`. Test-only dependencies go in `test/Project.toml`.
+
+**0.12 removed `set_parameter!`**, folding it into `set_value!(::ExaCore, …)`, so both the core
+and the model path of `set_nodes!` call `set_value!` now. The suite did not catch that on its
+own: nothing exercised `set_nodes!` on a *core*, which was the one uncovered line in `core.jl`.
+`test/api/set_nodes.jl` covers it now. Registry 0.12 also has **no `Colon` indexing**, so the
+two forwarding lines in `handles.jl` are dormant until `jc/colon-indexing` lands on it.

@@ -42,6 +42,38 @@
         @test m.basis isa StateForm
     end
 
+    @testset "a registered handle takes precedence over a derived name" begin
+        core = CollocationExaCore(nodes, K)
+        core, Kvar = ExaModels.add_var(core, 1:3; name = Val(:K))
+        core, Nvar = ExaModels.add_var(core, 1:2; name = Val(:N))
+
+        @test core.K === Kvar
+        @test core.N === Nvar
+        @test ExaModels.ExaModel(core).K === Kvar
+        @test core.mesh isa ExaModelsCollocation.CollocationMesh
+        @test core.nodes === core.mesh.nodes
+        @test core.weights === core.mode.weights
+    end
+
+    @testset "derived cores do not share block and resid" begin
+        base = CollocationExaCore(nodes, K)
+        b1, z1 = add_var_collocation(base, 1:1)
+        b2, z2 = add_var_collocation(base, 1:1)
+
+        @test isempty(base.block)
+        @test length(b1.block) == 1 && b1.block[1] === z1
+        @test length(b2.block) == 1 && b2.block[1] === z2
+
+        b1, _ = add_con_collocation(
+            b1, (z1[v] => -z1[v, i, k] for (v, i, k, t) in [(v,) for v in 1:1]),
+        )
+        @test isempty(base.resid) && isempty(b2.resid)
+        @test length(b1.resid) == 1
+
+        b1, _ = add_con_continuity(b1, z1)
+        @test b1.ncon == b1.N * K + (b1.N - 1)
+    end
+
     @testset "both entry points agree" begin
         # CollocationExaCore is sugar over ExaCore(T; tag = Collocation(...)); Collocation
         # holds the validation so the sugar cannot get around it.
@@ -68,53 +100,34 @@
         @test_throws Exception core.nope
     end
 
-    @testset "builds on $(something(b, "CPU"))" for b in BACKENDS
-        N, Nz = 5, 2
-        core = CollocationExaCore(range(0.0, 1.0; length = N + 1), 3; backend = b)
-        @add_var_collocation(core, z, 1:Nz)
-        @add_con_collocation(core, coll, z[v], -z[v] for v in 1:Nz)
-        @add_con_continuity(core, cont, z)
-
-        m = ExaModels.ExaModel(core)
-        @test m isa ExaModelsCollocation.CollocationExaModel
-        @test m.meta.ncon == Nz * N * 3 + Nz * (N - 1)
-    end
-end
-
-@testset "set_nodes!" begin
-    @testset "moves the mesh without rebuilding" begin
-        # A rhs that genuinely depends on t, so a mesh update that moved h but not t would
-        # show up here: dz/dt = -2t z, z(0) = 1 => exp(-t^2).
-        function build(adaptive; nodes = range(0.0, 1.0; length = 11), K = 3)
-            core = CollocationExaCore(nodes, K; adaptive)
-            @add_var_collocation(core, z, 1:1)
-            @add_con_collocation(core, coll, z[v], -2 * t * z[v] for v in 1:1)
+    @testset "$(something(b, "CPU")), adaptive = $ad" for b in BACKENDS, ad in (false, true)
+        N, Nz, K = 5, 2, 3
+        build(backend) = begin
+            core = CollocationExaCore(
+                range(0.0, 1.0; length = N + 1), K; backend = backend, adaptive = ad,
+            )
+            @add_var_collocation(core, z, 1:Nz)
+            @add_con_collocation(core, coll, z[v], -2 * t * z[v] for v in 1:Nz)
             @add_con_continuity(core, cont, z)
-            ExaModels.@add_con(core, ic, z[v, 1, 0] - 1.0 for v in 1:1)
-            ExaModels.ExaModel(core), z
+            ExaModels.ExaModel(core)
         end
-        terminal_of(m, z) =
-            ExaModels.solution(madnlp(m; print_level = MadNLP.ERROR, tol = 1e-12), z)[1, end, end]
 
-        m, z = build(true)
-        graded = [(i / 10)^2 for i in 0:10]
-        set_nodes!(m, graded)
-        @test m.nodes ≈ graded
-        @test ExaModelsCollocation._hval(m.mesh) ≈ diff(graded)
+        m, ref = build(b), build(nothing)
+        @test m isa ExaModelsCollocation.CollocationExaModel
+        @test m.meta.ncon == Nz * N * K + Nz * (N - 1)
 
-        mr, zr = build(false; nodes = graded)
-        @test terminal_of(m, z) ≈ terminal_of(mr, zr) rtol = 1e-10
-    end
+        xs = collect(range(0.1, 2.0; length = ref.meta.nvar))
+        x = copyto!(similar(m.meta.x0), xs)
+        c = similar(m.meta.x0, m.meta.ncon)
+        j = similar(m.meta.x0, m.meta.nnzj)
+        ExaModels.NLPModels.cons!(m, x, c)
+        ExaModels.NLPModels.jac_coord!(m, x, j)
 
-    @testset "rejects what it cannot do" begin
-        core = CollocationExaCore(range(0.0, 1.0; length = 6), 3)
-        @test_throws ArgumentError set_nodes!(core, collect(range(0.0, 2.0; length = 6)))
+        cref, jref = zeros(ref.meta.ncon), zeros(ref.meta.nnzj)
+        ExaModels.NLPModels.cons!(ref, xs, cref)
+        ExaModels.NLPModels.jac_coord!(ref, xs, jref)
 
-        acore = CollocationExaCore(range(0.0, 1.0; length = 6), 3; adaptive = true)
-        # changing the interval count changes the variable count, so it needs a rebuild
-        @test_throws DimensionMismatch set_nodes!(acore, collect(range(0.0, 1.0; length = 7)))
-        @test_throws ArgumentError set_nodes!(acore, [0.0, 0.4, 0.2, 0.6, 0.8, 1.0])
-        # and a repeated boundary, which would collapse an interval to zero width
-        @test_throws ArgumentError set_nodes!(acore, [0.0, 0.2, 0.2, 0.6, 0.8, 1.0])
+        @test Array(c) ≈ cref
+        @test Array(j) ≈ jref
     end
 end

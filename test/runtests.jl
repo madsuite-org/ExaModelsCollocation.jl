@@ -26,5 +26,7 @@ const DEGREES = 1:5
         include("api/add_var_collocation.jl")
         include("api/add_con_collocation.jl")
         include("api/add_con_continuity.jl")
+        include("api/set_nodes.jl")
+        include("api/interpolate.jl")
     end
 end

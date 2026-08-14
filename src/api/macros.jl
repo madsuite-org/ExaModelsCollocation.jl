@@ -35,6 +35,11 @@ end
 # Syntax that reads as a bare name but is not a value
 const _NOT_OPERANDS = (:end, :begin)
 
+# `end` and `begin` mean something only in index position, so a `ref` mentioning either is
+# left as written rather than rewritten into a _colidx call
+_indexonly(ex) = ex isa Symbol ? ex in _NOT_OPERANDS :
+    ex isa Expr ? any(_indexonly, ex.args) : false
+
 # Every operand of the body through _colidx; `skip` holds the names the body itself binds
 function _complete(ex, skip)
     ex isa Symbol &&
@@ -43,6 +48,7 @@ function _complete(ex, skip)
 
     h = ex.head
     if h === :ref
+        any(_indexonly, ex.args[2:end]) && return ex
         return Expr(:call, _colidx, ex.args[1], :i, :k, _completeall(ex.args[2:end], skip)...)
     elseif h === :. && length(ex.args) == 2 && ex.args[2] isa QuoteNode
         # a block reached as core.z completes like a bare one

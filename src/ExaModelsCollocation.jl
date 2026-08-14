@@ -20,6 +20,8 @@ for file in [
         "api/add_var_collocation",
         "api/add_con_collocation",
         "api/add_con_continuity",
+        "api/set_nodes",
+        "api/interpolate",
     ]
     include("$file.jl")
 end
@@ -28,7 +30,7 @@ export CollocationExaCore, CollocationExaModel, CollocationVariable, Collocation
 export add_var_collocation, @add_var_collocation
 export add_con_collocation, @add_con_collocation
 export add_con_continuity, @add_con_continuity
-export set_nodes!
+export set_nodes!, interpolate
 export StateForm, DerivativeForm
 export GaussRadau, GaussLegendre, GaussLobatto
 

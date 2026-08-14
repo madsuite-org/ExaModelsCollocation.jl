@@ -219,6 +219,26 @@ end
         end
         @test same_residual(both(true), both(false))
     end
+
+    @testset "end and begin index as written" begin
+        coeff(which) = () -> begin
+            core = CollocationExaCore(nodes, K)
+            @add_var_collocation(core, z)
+            a = [1.0, 2.0, 10.0]
+            if which === :literal
+                @add_con_collocation(core, coll, z[], -10.0 * z)
+            elseif which === :atend
+                @add_con_collocation(core, coll, z[], -a[end] * z)
+            else
+                @add_con_collocation(core, coll, z[], -a[begin + 2] * z)
+            end
+            ExaModels.ExaModel(core)
+        end
+
+        @testset "$w" for w in (:atend, :atbegin)
+            @test same_residual(coeff(w), coeff(:literal))
+        end
+    end
 end
 
 @testset "what the macro refuses" begin

@@ -43,6 +43,22 @@ end
 Base.show(io::IO, s::CollocationSlot) =
     print(io, "CollocationSlot ", s.var.name, "[", join(s.idx, ", "), "]")
 
+# A slot names a target, so it is not a value. Reaching one through arithmetic means the
+# macro's short spelling was written where add_con_collocation wants the mesh indices out.
+_slot_misuse(s::CollocationSlot) = throw(ArgumentError(
+    "$(s.var.name)[$(join(s.idx, ", "))] names a slot, not a value. Write the mesh indices " *
+    "out as $(s.var.name)[$(join((s.idx..., "i", "k"), ", "))], or use @add_con_collocation, " *
+    "which appends them."
+))
+
+for op in (:+, :-, :*, :/, :^)
+    @eval Base.$op(s::CollocationSlot, ::Any) = _slot_misuse(s)
+    @eval Base.$op(::Any, s::CollocationSlot) = _slot_misuse(s)
+    @eval Base.$op(s::CollocationSlot, ::CollocationSlot) = _slot_misuse(s)
+end
+Base.:-(s::CollocationSlot) = _slot_misuse(s)
+Base.:+(s::CollocationSlot) = _slot_misuse(s)
+
 # Dimensions alone name a slot, dimensions plus the mesh indices a coefficient. The two arities
 # never collide, a full index being `length(dims) + 2` long.
 Base.getindex(z::CollocationVariable, idx...) = _index_collocation(z, idx)

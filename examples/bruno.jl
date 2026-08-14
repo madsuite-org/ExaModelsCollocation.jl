@@ -1,15 +1,10 @@
 # Bruno et al. (2016), J Exp Bot 67(21):5993-6005, as posed in the PEtab Benchmark
 # Collection (Bruno_JExpBot2016). Parameter estimation: seven species, six conditions, one
 # set of rate constants, and a Gaussian negative log-likelihood over 77 measurements.
-#
-# One block for everything, z[v,c,i,k]. Seven species obey four structurally distinct
-# right-hand sides, so four calls over disjoint slots feed a single continuity call. The mesh
-# is adaptive, so set_nodes! can move it.
-
-module BrunoModel
 
 using ExaModels
 using ExaModelsCollocation
+using MadNLP
 
 # ----- Problem data from PEtab file -----
 
@@ -173,35 +168,11 @@ const Nm = sum(size(tbl, 1) for (_, _, tbl) in meas)
 # Known optimal solution
 const NLL_REF = -46.68818145
 
-# ----- Creating mesh nodes -----
+# ----- Mesh nodes -----
 
-# Refine mesh by capping interval widths by hmax, keeping where each original node landed
-function refine_mesh(nodes, hmax)
-    out = [float(first(nodes))]
-    keep = [1]
-    for (lo, hi) in zip(nodes[1:(end - 1)], nodes[2:end])
-        n = max(1, ceil(Int, (hi - lo) / hmax))
-        append!(out, lo .+ (hi - lo) .* (1:n) ./ n)
-        push!(keep, length(out))
-    end
-    return out, keep
-end
-
-const t_meas = sort(unique(vcat(0.0, [tbl[:, 1] for (_, _, tbl) in meas]...)))
-
-# Interval width cap, 15.0 in test/api/bruno.jl. 3.6 gives N = 55.
-const HMAX = 3.6
-
-# Place interval nodes at every t_meas, then refine
-#   interval: measurement time -> the interval whose right end it is
-function mesh(hmax = HMAX)
-    nodes, keep = refine_mesh(t_meas, hmax)
-    return (;
-        nodes = nodes,
-        N = length(nodes) - 1,
-        interval = Dict(t_meas[j] => keep[j] - 1 for j in eachindex(t_meas)),
-    )
-end
+# Uniform mesh over [0, TEND = 180.0]
+# Every measurement time is a multiple of 5, so we choose N = 36
+const TEND, NMESH = 180.0, 36
 
 # ----- Obtain good initial guess for discretized states -----
 
@@ -218,7 +189,7 @@ function RK4(f, z0, ts; substeps = 8)
             k4 = f(z .+ dt .* k3)
             z = z .+ (dt / 6) .* (k1 .+ 2 .* k2 .+ 2 .* k3 .+ k4)
         end
-        t = ts[n]                        # reset, so substepping cannot drift
+        t = ts[n]
         out[n] = copy(z)
     end
     return out
@@ -237,11 +208,11 @@ function state0(θ)
 end
 
 # ----- Create ExaModel -----
-function build(θ0 = θnom; K = KDEG, m = mesh())
-    nodes, N = m.nodes, m.N
+function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH, adaptive = false)
+    nodes = range(0.0, TEND; length = N + 1)
 
-    # Create CollocationExaCore with adaptive mesh
-    core = CollocationExaCore(nodes, K; adaptive = true)
+    # Create CollocationExaCore
+    core = CollocationExaCore(nodes, K; adaptive)
 
     # Solve ODE system at nominal θ to obtain initial guess for discretized states
     # NOTE: core.mesh.t is a parameter block on an adaptive mesh, so the times are recomputed
@@ -263,7 +234,7 @@ function build(θ0 = θnom; K = KDEG, m = mesh())
     # Create variables (unknown parameters to estimate)
     ExaModels.@add_var(core, p, 1:Np; lvar = θLB, uvar = θUB, start = θ0)
 
-    # Create auxiliary variables for condition-dependent variables
+    # Create auxiliary variables and constraints for condition-dependent variables
     ExaModels.@add_var(core, cv, 1:Ncv, 1:Nc; start = cv0)
     ExaModels.@add_con(core, rate_off,
         cv[cvidx,c]
@@ -279,10 +250,6 @@ function build(θ0 = θnom; K = KDEG, m = mesh())
     )
 
     # Create collocation constraints
-    # NOTE: seven species, four distinct expressions, so four calls over the one block, each
-    # naming the slots z[v,c] it is the right-hand side for. The mesh is crossed in, so the
-    # iterator carries only what the expression varies with.
-    # bcar, zea: one sink
     @add_con_collocation(core, coll_decay1, z[v,c],
         -cv[cvidx,c] * z[v,c]
         for (v,cvidx) in [(BCAR, KB1), (ZEA, K5)], c in 1:Nc
@@ -329,8 +296,8 @@ function build(θ0 = θnom; K = KDEG, m = mesh())
     itr_obj = Tuple{Int, Int, Int, Float64, Float64, Float64}[]
     for (v, c, tbl) in meas, row in axes(tbl, 1)
         tm, ym, sd = tbl[row, 1], tbl[row, 2], tbl[row, 3]
-        i = m.interval[tm]
-        i > 0 || error("measurement at t = $tm is not on an interval's right end")
+        i, r = divrem(Int(tm) * N, Int(TEND))
+        r == 0 || error("measurement at t = $tm is not on an interval's right end")
         push!(itr_obj, (v, c, i, ym, sd, log(sd) + 0.5 * log(2π)))
     end
     ExaModels.@add_obj(core,
@@ -338,7 +305,19 @@ function build(θ0 = θnom; K = KDEG, m = mesh())
         for (v,c,i,ym,sd,cst) in itr_obj
     )
 
-    return core, z, p, cv
+    return ExaModel(core)
 end
 
-end # module
+# ----- Solve -----
+
+# Create CollocationExaModel
+model = examodel_bruno()
+
+# Solve
+result = madnlp(model; tol = 1e-8)
+
+θsol = solution(result, model.p)
+println("status    = $(result.status)")
+println("nll       = $(result.objective), reference = $NLL_REF")
+println("|nll-ref| = $(abs(result.objective - NLL_REF))")
+println("max |θ - θnom| = $(maximum(abs, θsol - θnom))")

@@ -208,43 +208,15 @@ _tpar(m::CollocationMesh) = getfield(m, :tpar)
 _isstateform(c) = _mode(c).basis isa StateForm
 _isadaptive(c) = _hpar(_mesh(c)) !== nothing
 
-"""
-    set_nodes!(model, nodes)
+# Copied rather than grown in place, so a core does not report what was added to a sibling
+# derived from the same parent. The mesh stays shared: set_nodes! moves it for every core.
+_addblock(c::CollocationExaCore, z::CollocationVariable) =
+    _retag(c, push!(copy(_tag(c).block), z), _tag(c).resid)
+_addresidual(c::CollocationExaCore, res::Residual) =
+    _retag(c, _tag(c).block, push!(copy(_tag(c).resid), res))
 
-Relocates the placement of `nodes` of a `CollocationExaModel`, given `adaptive = true`.
-"""
-function set_nodes!(c, nodes::AbstractVector)
-    mesh = _mesh(c)
-    _hpar(mesh) === nothing && throw(ArgumentError(
-        "set_nodes!: this mesh is not adaptive; build it with `adaptive = true`"
-    ))
-    length(nodes) == length(mesh.nodes) || throw(DimensionMismatch(
-        "set_nodes!: expected $(length(mesh.nodes)) boundaries, got $(length(nodes)); " *
-        "changing the number of intervals needs a rebuild"
-    ))
-    issorted(nodes; lt = <=) ||
-        throw(ArgumentError("set_nodes!: nodes must be strictly increasing along t"))
-
-    taus = _weights(c).taus
-    h, t = _hval(mesh), _tval(mesh)
-    copyto!(mesh.nodes, nodes)
-    h .= diff(mesh.nodes)
-    for i in axes(t, 1), j in axes(t, 2)
-        t[i, j] = mesh.nodes[i] + h[i] * taus[j]
-    end
-
-    _set_mesh_parameter!(c, _hpar(mesh), h)
-    _set_mesh_parameter!(c, _tpar(mesh), t)
-    return nothing
-end
-
-_set_mesh_parameter!(c::CollocationExaCore, p, values) =
-    ExaModels.set_parameter!(c, p, values)
-_set_mesh_parameter!(m::CollocationExaModel, p, values) =
-    ExaModels.set_value!(m, p, values)
-
-_addblock(c::CollocationExaCore, z::CollocationVariable) = (push!(_tag(c).block, z); c)
-_addresidual(c::CollocationExaCore, res::Residual) = (push!(_tag(c).resid, res); c)
+_retag(c, block, resid) =
+    ExaCore(c; tag = CollocationTag(_tag(c).mode, _tag(c).mesh, block, resid))
 
 # The residuals recorded for a variable, in the order they were added
 _residuals(c::CollocationExaCore, var) = [r for r in _tag(c).resid if r.var === var]
@@ -298,6 +270,11 @@ Base.getproperty(m::CollocationExaModel{T, VT}, name::Symbol) where {T, VT <: Ab
 function _getprop(c, name::Symbol)
     hasfield(typeof(c), name) && return getfield(c, name)
 
+    # A registered handle takes precedence over a derived name: N and K in particular are
+    # what a model would call its own variables.
+    refs = getfield(c, :refs)
+    hasfield(typeof(refs), name) && return getfield(refs, name)
+
     tag = _tag(c)
     name in _TAG_FIELDS && return getfield(tag, name)
     name === :N && return length(_hval(tag.mesh))
@@ -305,9 +282,6 @@ function _getprop(c, name::Symbol)
     name === :nodes && return tag.mesh.nodes
     name === :adaptive && return _hpar(tag.mesh) !== nothing
     name in _MODE_FIELDS && return getfield(tag.mode, name)
-
-    refs = getfield(c, :refs)
-    hasfield(typeof(refs), name) && return getfield(refs, name)
     return getfield(c, name)
 end
 

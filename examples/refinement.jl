@@ -34,7 +34,6 @@ function example_model(nodes, K = 3)
     @add_var_collocation(core, z)
 
     # Create collocation constraints
-    # NOTE: nothing varies but the mesh, so there is no iterator to write
     @add_con_collocation(core, coll, z[], rhs(z, t))
 
     # Create continuity constraints
@@ -54,30 +53,19 @@ end
 
 # ----- Right-hand side off the model -----
 
-# add_con_collocation records f as a Residual: r.f on a row of Ints is a node over (x, θ)
-
 # Absolute x-index of one coefficient
 _xidx(z, s, i, k) = z[s..., i, k].i
 
 # Host copy, doctorable entry by entry after a GPU solve
 _hostcopy(v) = copyto!(Vector{eltype(v)}(undef, length(v)), v)
 
-# The tau each of a block's coefficients sits at, one per k in krange
-_tauof(z, taus) = first(z.krange) == 0 ? [zero(eltype(taus)); taus] : collect(taus)
+# One block's coefficients off the raw primal, shaped as solution() shapes them
+_blocksol(x, z) =
+    reshape(view(x, (z.offset + 1):(z.offset + z.length)), ExaModels.size(z.size)...)
 
-# Nodes to interpolate on and the k to read coefficients from, minus Lobatto's duplicate k = 1
-function _taunodes(z, taus)
-    ks = collect(z.krange)
-    first(ks) == 0 || return (collect(taus), ks)
-    first(taus) == 0 && return (collect(taus), ks[2:end])
-    return ([zero(eltype(taus)); taus], ks)
-end
-
-# Lagrange interpolant through the coefficients zi at the nodes xn
-_interp(zi, xn, tau) = sum(
-    prod((tau - xn[m]) / (xn[j] - xn[m]) for m in eachindex(xn) if m != j) * zi[j]
-    for j in eachindex(xn)
-)
+# The block's polynomial at t, one value per slot in the order Iterators.product(dims...) gives
+_slotvals(model, zsol, z, t) =
+    (v = interpolate(model, zsol, z, t); isempty(z.dims) ? (v,) : vec(v))
 
 # Where a residual's rows keep the interval, collocation and slot indices. add_con_collocation
 # recorded it, so nothing here has to reconstruct it.
@@ -111,7 +99,7 @@ end
 # ----- Error estimate -----
 
 function estimate_error_phr(model, x; kscratch = 1)
-    nodes, h, N, taus = model.nodes, diff(model.nodes), model.N, model.weights.taus
+    nodes, h, N = model.nodes, diff(model.nodes), model.N
 
     # The K+1 roots (non-collocation points to compare)
     fine = Collocation([0.0, 1.0], model.K + 1;
@@ -122,24 +110,30 @@ function estimate_error_phr(model, x; kscratch = 1)
     tau, Omega = fine.mode.weights.taus, fine.mode.weights.A
 
     # Every block is interpolated, not just the collocated ones: f reads controls there too
-    bslots = [(z, s, _taunodes(z, taus)...) for z in model.block
-              for s in Iterators.product(z.dims...)]
+    blocks = [(z, _blocksol(x, z), collect(Iterators.product(z.dims...))) for z in model.block]
     lookup = [(_rowlayout(model, r), _scratch_rows(r, _rowlayout(model, r))) for r in model.resid]
     rslots = [(r, s, lk) for (r, lk) in zip(model.resid, lookup) for s in r.fwhich]
     ev = [[_scratch_eval(model, r, _scratch_row(rows, r, s, i, kscratch)) for i in 1:N]
           for (r, s, (_, rows)) in rslots]
 
+    # Where a collocated slot's interpolated value belongs in znew
+    at = Dict((r.var, s) => n for (n, (r, s, _)) in enumerate(rslots))
+
     xs, ts = _hostcopy(x), _hostcopy(model.θ)
     fnew = zeros(length(rslots), N, length(tau))
+    znew = zeros(length(rslots), N, length(tau))
 
     for i in 1:N, (m, s) in enumerate(tau)
         tf = nodes[i] + h[i] * s
 
         # Move every block before any residual is evaluated, since f reads the whole state
         # vector at its point, and read from the pristine x, which the scratch write destroys
-        for (z, sl, xn, ks) in bslots
-            zi = [x[_xidx(z, sl, i, k)] for k in ks]
-            xs[_xidx(z, sl, i, kscratch)] = _interp(zi, xn, s)
+        for (z, zsol, slots) in blocks
+            for (sl, v) in zip(slots, _slotvals(model, zsol, z, tf))
+                xs[_xidx(z, sl, i, kscratch)] = v
+                # znew = Interpolated states of the degree K Lagrange polynomial at the K+1 roots
+                haskey(at, (z, sl)) && (znew[at[(z, sl)], i, m] = v)
+            end
         end
         model.adaptive && (ts[model.mesh.t[i, kscratch].i] = tf)
 
@@ -155,14 +149,10 @@ function estimate_error_phr(model, x; kscratch = 1)
         #   Interpolated states of the degree K Lagrange polynomial at the K+1 roots
         #   Integrated states to K+1 degree using K+1 interpolated state points
         maximum(
-            let (xn, ks) = _taunodes(r.var, taus),
-                zi = [x[_xidx(r.var, sl, i, k)] for k in ks],
-                # znew = Interpolated states of the degree K Lagrange polynomial at the K+1 roots
-                znew = [_interp(zi, xn, s) for s in tau]
-
+            let zi = view(_blocksol(x, r.var), sl..., i, :)
                 maximum(
                     # (Integrated states to K+1 degree using K+1 interpolated state points) - znew
-                    abs(zi[1] + h[i]*sum(Omega[j,m]*fnew[n,i,j] for j in eachindex(tau)) - znew[m])
+                    abs(zi[1] + h[i]*sum(Omega[j,m]*fnew[n,i,j] for j in eachindex(tau)) - znew[n,i,m])
                     for m in eachindex(tau)
                 ) / (1 + maximum(abs, zi))
             end
@@ -234,22 +224,16 @@ movement(new, old, h) = maximum(
     for j in eachindex(new)
 )
 
-
 # Re-interpolated states at interpolation points based on new node locations for better initial guess
-function reinterpolate(model, zsol, old, new)
+function reinterpolate(model, zsol, new)
     # evaluate the degree K Lagrange polynomial through the solved coefficients
     z, taus = model.z, model.weights.taus
-    xn, ks = _taunodes(z, taus)
-    cols = ks .- first(z.krange) .+ 1     # solution() is 1-based, the block is k = 0,...,K
-    hold, hnew = diff(old), diff(new)
-    start = similar(zsol, size(zsol))
-    for i in eachindex(hnew), (k, tau) in enumerate(_tauof(z, taus))
-        t = new[i] + hnew[i] * tau
-        ii = clamp(searchsortedlast(old, t), 1, length(hold))
-        s = (t - old[ii]) / hold[ii]
-        start[i, k] = _interp(view(zsol, ii, cols), xn, s)
-    end
-    return start
+    tauof = first(z.krange) == 0 ? [zero(eltype(taus)); taus] : collect(taus)
+    hnew = diff(new)
+    return [
+        interpolate(model, zsol, z, new[i] + hnew[i] * tau)
+        for i in eachindex(hnew), tau in tauof
+    ]
 end
 
 function solve_adaptively(
@@ -273,9 +257,9 @@ function solve_adaptively(
 
         push!(history, (; nodes, zsol, err)) # tracking error histroy for plot
 
-        # find new node placements based on error + de Boor equidistributino
-        new = find_new_nodes(model, err)
-        moved = movement(new, nodes, diff(model.nodes))
+        # find new node placements based on error + de Boor equidistribution
+        new_nodes = find_new_nodes(model, err)
+        moved = movement(new_nodes, nodes, diff(model.nodes))
         verbose && println(
             "iteration $it: max error = $(maximum(err)), movement = $moved, " *
             "collocation mismatch = $(residual_mismatch(model, x))"
@@ -285,8 +269,10 @@ function solve_adaptively(
         (maximum(err) < tol || moved < movetol) && break
 
         # if criteria not satisfied, set new nodes and re-solve
-        set_nodes!(model, new) # <--- ExaModelsCollocation.jl feature with adaptive = true
-        # set_start!(model, model.z, reinterpolate(model, zsol, nodes, new))
+        # NOTE: interpolate reads the mesh off the model, so the states move before the nodes do
+        start = reinterpolate(model, zsol, new_nodes)
+        set_nodes!(model, new_nodes) # <--- ExaModelsCollocation.jl feature with adaptive = true
+        set_start!(model, model.z, start)
         x, zsol = solve(model)
     end
 

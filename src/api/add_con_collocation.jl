@@ -34,7 +34,10 @@ struct RowLayout{S}
 end
 
 function _row_layout(itr, slot, who::Symbol)
-    len = isempty(itr) ? 2 : length(first(itr))
+    isempty(itr) && throw(ArgumentError(
+        "$who: the iterator is empty, so there is no collocation constraint to add."
+    ))
+    len = length(first(itr))
     len >= 2 || throw(ArgumentError(
         "$who: the iterator rows must end in (…, i, k); the ones given carry $len entries."
     ))
@@ -134,8 +137,8 @@ julia> c, rate = ExaModels.add_var(c, 1:Nz)
 julia> itr = [(v, exp) for v in 1:Nz, exp in 1:Nexp]
 
 julia> c, coll = add_con_collocation(c,
-           z[v,exp] => -rate[v]*z[v,exp] + rate[v]*cos(t) # right-hand side function expression added for z[v,exp], can use t
-           for (v, exp) in itr) # automatically iterated over all N,K with t included
+           z[v,exp] => -rate[v]*z[v,exp,i,k] + rate[v]*cos(t) # right-hand side function expression added for z[v,exp]
+           for (v, exp, i, k, t) in itr) # (i, k) appended to itr autmoatically, t also if adaptive = false
 ```
 """
 function add_con_collocation(
