@@ -13,7 +13,9 @@ dimension inference, no initialization, no integrator, no solver wrapper. You as
 with `ExaModels.add_*` and reach for a helper only where collocation actually changes something.
 
 - Dependencies are **ExaModels** and **FastGaussQuadrature**. Do not add others.
-- **One file per exported function, named after it.** Do not grow past the three helpers.
+- **One file per exported function, named after it**, under `src/api/`. Do not grow past the
+  three helpers. `src/api/macros.jl` is only what all three macros share, and `test/` mirrors
+  the three source directories.
 - Initial, terminal, and path conditions carry no collocation content — plain `ExaModels.@add_con`.
 - Keep the README short and shaped like ExaModels' own `add_var` docs. Rationale, derivations,
   and Biegler cross-references live here, in `src` comments, or in `test/`.
@@ -66,19 +68,24 @@ and the observed order is unaffected.
 
 ## ExaModels idioms this module must follow
 
-`ExaModelsPEtab.jl/src/nlp/collocation.jl` and `nlp/continuity.jl` are the reference
-implementation of this exact pattern; read them before changing a helper.
+`ExaModelsPEtab.jl/src/nlp/collocation.jl` and `nlp/continuity.jl` are the largest caller, and
+still on the **pre-probe** spelling: a bare `z` argument, a numeric row ending in `t_ij`, and
+`mesh.tpar[i,k]` in the adaptive branch. Porting them is a separate job on branch `emc`. Read
+them for what a real caller needs, not for how a call is written.
 
 1. **Mirror the upstream signature.** `(core, dims_or_gen...)`, name as an optional
    `name = Val(:z)` **keyword** — never a positional `Symbol` — returning `(core, handle)`.
    Nothing is threaded alongside `core`; it carries the discretization itself.
 2. **Iterators are flat arrays of tuples, destructured in the generator**: `for (v,c,i,k,t) in
-   itr`. Not NamedTuples with `d.field`.
+   itr`. Not NamedTuples with `d.field`. A row carries what `f` varies with and the pattern
+   names `i`, `k` and `t` past it, all three put there by the helper, so a row is never written
+   with the mesh in it. Rows that already end `(…, i, k)` are still read as written.
 3. **Traced loop indices cannot index a plain Julia array.** `A[j+1,k]` or `t[i,k]` inside a user
    expression throws `invalid index … of type DataIndexed`. Numeric data must ride in the
-   iterator tuple — hence the caller's row carrying `t`. Data the *caller* never references stays
-   out: the helper appends `h` itself, before tracing.
-4. **`add_con!` keys rows by position in the base iterator, not by index value.** A row's leading
+   iterator tuple — hence `t` being appended to the data on a numeric mesh rather than looked up
+   where it is read. Data the *caller* never references stays out: the helper appends `h` itself,
+   before tracing.
+4. **`add_con!` keys rows by position in the base iterator, not by index value.** A row's slot
    indices may name a restricted slice (`2:2`) where the two diverge, so base iterators are
    `vec`'d flat (`_flat`, in the helper — a caller never writes `vec`) and augmentations are
    keyed by linear position. Getting this wrong yields an INFEASIBLE model, not an error.
@@ -89,14 +96,32 @@ implementation of this exact pattern; read them before changing a helper.
 6. **One `add_con!` generator element is one term, not a sum.** Elements sharing a row index are
    accumulated by ExaModels, which is how a `Σⱼ` becomes a single SIMD kernel. Never build the
    summation inside a traced lambda.
-7. **The stencil lives in the function; the macro adds nothing to it.** Rows read
-   `(z's own indices…, whatever else f varies with…, i, k, t)`; `RowLayout` locates the slot and
-   the mesh entries by counting from both ends, so the middle is the caller's to order.
-   `_block_layout` admits **zero to two** leading dimensions and every stencil has a branch per
-   count — a block with none has no slot at all, and its one slot is the empty tuple that
-   `Iterators.product()` already yields. Look blocks up by handle identity, not by `Symbol`.
-   The caller builds the iterator: a product helper cannot express a row like `(v, l[v], i, k, t)`
-   whose later entries depend on the leading ones (`test/bruno.jl`'s `sweep`).
+7. **The stencil lives in the function, and so does the mesh.** Rows read
+   `(whatever f varies with…, i, k)` by the time `RowLayout` sees them; it takes `i` and `k` off
+   the end and carries the slot positions the probe found, so the rest is the caller's to order
+   and the slot indices need not lead. Which spelling the caller wrote is decided by **how many
+   names the pattern binds** against how long a row is, `_crossrows` counting the first off
+   `ArityProbe`'s `indexed_iterate`: `len + 3` crosses `1:N × 1:K` in, `len` or `len + 1` takes
+   the row as written, and `len + 2` is an error rather than a third reading, since contiguous
+   bands would let a stray name in an already-crossed pattern re-cross it into a wrong model.
+   Nothing about a row's *contents* can decide this, `(v,c,i,k)` and `(v,c,d1,d2)` being the same
+   length with the same slot positions. `_block_layout` admits **zero to two** leading dimensions
+   and every stencil has a branch per count — a block with none has no slot at all, and its one
+   slot is the empty tuple that `Iterators.product()` already yields. Look blocks up by handle
+   identity, not by `Symbol`.
+8. **The target is traced out of the generator, as `add_con!`'s two-argument form is**
+   (`ExaModels/src/nlp.jl`). `z[v,c]` cannot be an argument: `v` and `c` exist only inside the
+   generator. Indexing a block by its declared dimensions alone therefore gives a
+   `CollocationSlot` rather than a node — the arities never collide, a full index being
+   `length(dims) + 2` long — and one `gen.f(ArityProbe(n))` recovers the block, off
+   `DataIndexed`'s type parameter which row entries name its slot, and the pattern's arity in
+   the same pass. What the probe hands back is what a `DataSource` would, so only the counting
+   is added to the trace.
+9. **The macro completes operands at trace time, not at expansion time.** It cannot know whether
+   a name is a block, so every operand goes through `_colidx`, which appends `(i,k)` only to a
+   `CollocationVariable` given exactly its `dims`. This is what makes `z[v]`, `u[l]` and a bare
+   zero-dimension block all work, and it costs nothing in the kernel. A caller writing the
+   iterator out still can: `i` and `k` are read off the row when the pattern binds them.
 
 `add_var` admits an `Integer` dimension as well as a `UnitRange`, so `_dimrange` normalizes them
 before the block stores them — `_covered_slots` enumerates `dims`, and over an `Integer` it would
@@ -126,7 +151,7 @@ bound in the `where` clause, as `two_stage.jl` does on every one of its methods:
 Base.getproperty(c::CollocationExaCore{T,VT,B}, name::Symbol) where {T,VT<:AbstractVector{T},B}
 ```
 
-**`blocks` and `residuals` are `Vector`s grown in place**, so the tag's type is fixed at
+**`block` and `resid` are `Vector`s grown in place**, so the tag's type is fixed at
 construction — as `two_stage.jl` does with `var_scen`. The consequence is real: a core and every
 core derived from it **share one tag**, so a block added to the later one is visible on the
 earlier one. Only the `ExaCore` fields are copy-on-update.
@@ -156,15 +181,22 @@ expression reads that is not a state comes back at its solved value, which a clo
 `add_con_collocation` time could not have captured: in `ExaModelsPEtab.jl/src/nlp/collocation.jl`
 the expression reads `p`, so a numeric field would need the problem-specific signature
 `f(zvals, pvals, cvvals, gvals, t)`. To read `f` *off* the collocation points — what an error
-estimate needs — doctor copies of `x` and `θ` at one scratch `k`; `examples/r_refinement.jl` does
+estimate needs — doctor copies of `x` and `θ` at one scratch `k`; `examples/refinement.jl` does
 exactly this. Four traps: an autonomous `f` on a numeric mesh traces to a plain `Real`, not a node;
 every block must be moved to the new point before any residual is evaluated, since one expression
 reads the whole state vector at its point; under Lobatto the `k = 1` coefficient sits on the `k = 0`
-node, so an interpolation over both divides by zero and must drop one; and `r.rows` is
-`slots × N × K` long, so a row lookup that scans it is quadratic in the mesh — key it once into a
+node, so an interpolation over both divides by zero and must drop one; and `r.fiter` is
+`fwhich × N × K` long, so a row lookup that scans it is quadratic in the mesh — key it once into a
 `Dict`.
 
+`r.fiter` are the rows `f` takes, which means the caller's data crossed with the mesh where it
+was not already, plus `t` where the mesh is numeric, and `r.fwhere` is the `RowLayout` that
+built them. Read the layout off the record rather than
+recomputing it from a length: the slot positions came from the probe and are not recoverable by
+counting.
+
 `_split_collocation_args` accepts both `f(a; k = v)` and `f(a, k = v)` — reuse it for new macros.
+It lives in `src/api/macros.jl` with `_name_val` and the rewrite.
 
 ## The adaptive mesh
 
@@ -177,11 +209,21 @@ is *additionally* allocated as an `add_par` block; the numeric arrays stay, beca
 `-h[i]·A[j,k]` into one constant, where the parameter path allocates `N·K + N` parameters and
 traces a product of two symbolic terms.
 
+**`mesh.h` and `mesh.t` are one name each**, resolving through `getproperty` to the parameter
+block when adaptive and the array otherwise, since indexing them inside a residual is the only
+thing either is written for. Internals take the numbers with `_hval`/`_tval`. **Anything outside
+the package that wants numbers on an adaptive mesh has to recompute them** — `diff(nodes)` for
+`h`, `nodes[i] + h[i]*taus[k]` for `t` — which is what `examples/bruno.jl` does for its RK4
+start guess. That is the cost of the single name, and it is paid only where a start value or a
+bound is being built, never in an expression.
+
 **A graph node cannot ride in an iterator tuple.** `add_con` and `ExaModel` accept a
 `Vector{Tuple{Int,ParameterNode}}` silently and then `cons!` throws `Cannot convert Node2 to
-Float64` — a build-time silence, so it is worth stating twice. That is why an adaptive row ends
-`(…, i, k)` and a numeric one ends `(…, i, k, t)`: with a parameter mesh the caller indexes
-`mesh.tpar[i,k]` inside the right-hand side instead of destructuring `t`.
+Float64` — a build-time silence, so it is worth stating twice. That is why `t` reaches the
+generator differently on each mesh while the caller's row is the same: numerically it is
+appended to the data, adaptively `_appendt` builds `tpar[i,k]` at trace time. `_appendt` rebuilds
+the row with `ntuple(j -> r[j], Val(L))` rather than splatting it, because a traced row defines
+`indexed_iterate` but not `iterate`.
 
 `set_nodes!` redistributes a **fixed** number of intervals; adding one changes the variable count
 and needs a rebuild.
@@ -190,36 +232,51 @@ and needs a rebuild.
 
 Tests must **exercise every build path**: each roots family × each basis × a range of `K`.
 
-**Four files, and keep them to four.** A new helper gets a testset in `api.jl`, not a file of its
-own.
+**`test/` mirrors `src/`, one file per source file**, and `runtests.jl` includes them in that
+order. A new helper gets `test/api/<its name>.jl` because it got `src/api/<its name>.jl`, and
+nothing else earns a file.
 
-`test/collocation.jl` — the mode math. Check weights against the identities that define them (a
+**The whole models live in `examples/` only, and CI does not run them.** No copy of van der Pol
+or Bruno sits in `test/`, so **the Bruno objective pin is not enforced by `Pkg.test()`** and
+nothing in CI solves a problem of that size. Run the examples by hand after changing a helper,
+`refinement.jl` first: it is the only one that runs end to end, solving its own toy problem,
+reading `f` back off the recorded `Residual`, and moving the mesh with `set_nodes!`, so it
+exercises the probe, the parameter path of `t`, and the mesh naming together.
+
+**`bruno.jl` and `vanderpol.jl` only build.** The first returns `(core, z, p, cv)` and the second
+an `ExaModel`, so nothing in the repo solves Bruno or compares its objective against `NLL_REF`.
+The driver that did was deleted along with the second copy of the r-refinement algorithm, and
+writing another is open work.
+
+`test/collocation/` — the mode math. Check weights against the identities that define them (a
 Lagrange weight vector applied to the nodal values of a polynomial of degree `≤ length(nodes)-1`
 reproduces exactly the operation it encodes, so monomials pin every entry) rather than against
 stored numbers. Assert the shapes too; that is what catches a weight matrix wrong for its basis.
 
-`test/api.jl` — every exported helper, closing with both residual forms on `dz/dt = -z` solved
+`test/api/` — every exported helper, closing with both residual forms on `dz/dt = -z` solved
 through them, using invariants a fixed tolerance would miss:
 
 - **The bases agree.** Algebraically equivalent discretizations over the same variables must reach
   the same solution to solver tolerance.
 - **The order is right.** Terminal error decays at `O(h²ᴷ)` for Legendre, `O(h²ᴷ⁻¹)` for Radau,
   `O(h²ᴷ⁻²)` for Lobatto. A mis-weighted stencil can still converge; it loses order.
-- **The interfaces and the meshes pin to each other.** Macros vs. functions must give identical
-  residuals row for row; `adaptive = true` must *reproduce* the numeric mesh, not merely come
-  close; after `set_nodes!` the model must match one rebuilt from scratch — which is what catches
-  `h` moving without `t`.
+- **The spellings pin to each other.** `z[v]` and `z[v,i,k]`, an omitted `i,k` and a written-out
+  one, slot indices that lead the row and slot indices that do not, and the macro against the
+  function must all give identical residuals row for row — compare `cons`, since a solve
+  tolerance hides a wrong row. `adaptive = true` must *reproduce* the numeric mesh, not merely
+  come close; after `set_nodes!` the model must match one rebuilt from scratch — which is what
+  catches `h` moving without `t`.
 
 **The two whole models are deliberately opposite in how they declare the state**, so both
-spellings keep working. `test/vanderpol.jl` is **one block per state** — `z1[i,k]` with no
-declared dimensions, covering the zero-leading-dimension branch of every stencil, and showing the
-cost of splitting. `test/bruno.jl` is **one block for everything**, `z[v,c,i,k]`, and is the only
-regression test for `start` on `add_var_collocation` and for the multi-residual path: seven
-species obey four structurally distinct expressions, so four `@add_con_collocation` calls over
-disjoint slots feed a single `@add_con_continuity`. Its objective is pinned to the negative
-log-likelihood PEtab.jl reports at the collection's nominal parameters, `-46.68818145`, to
-`atol = 1e-6`; that one assertion covers the whole discretization, so do not loosen it to make an
-unrelated change pass.
+spellings keep working. `examples/vanderpol.jl` is **one block per state** — `z1[i,k]` with no
+declared dimensions, covering the zero-leading-dimension branch of every stencil and the
+no-iterator form, and showing the cost of splitting. `examples/bruno.jl` is **one block for
+everything**, `z[v,c,i,k]`: seven species obey four structurally distinct expressions, so four
+`@add_con_collocation` calls over disjoint slots feed a single `@add_con_continuity`. Its
+`NLL_REF`, `-46.68818145`, is the negative log-likelihood PEtab.jl reports at the collection's
+nominal parameters, and matching it to `atol = 1e-6` covers the whole discretization in one
+number. **Neither runs under `Pkg.test()`**, and neither solves, so that check needs a driver
+before it is a check at all.
 
 `ExaModels.solution(result, z)` returns a plain 1-based array, so a block indexed `k = 0,…,K`
 lands on `1,…,K+1` there.

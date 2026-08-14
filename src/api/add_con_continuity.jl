@@ -4,33 +4,24 @@
 #
 #   StateForm      (10.14a)  sum_{j=0..K} b[j] z[...,i,j]  =  z[...,i+1,0]
 #   DerivativeForm (10.15a)  z[...,i+1,0] - z[...,i,0]     =  h[i] sum_{j=1..K} b[j] f_ij
-#
-# StateForm evaluates the state polynomial at tau = 1; DerivativeForm integrates the f
-# add_con_collocation was already given. Both read their slots off that same record, so the
-# call is the same either way: name the variable, and the mode decides what is built.
 
 """
     add_con_continuity(core, z; name = nothing, kwargs...)
 
-Adds the constraints tying each interval's terminal polynomial value to the next interval's
-boundary node, for `i = 1,…,N-1`. Returns `(core, Constraint)`.
+Adds the continuity constraints for a `CollocationVariable` to `core`, enforcing each interval's
+terminal value to equal the value at the next interval's left boundary node, for `i = 1,…,N-1`.
+Returns `(core, Constraint)`.
 
-Every slot of `z` is tied, and each must be covered by exactly one
-[`add_con_collocation`](@ref) call, so those calls come first — for either basis.
-`core.basis` sets what is built, with `f_ij = f(z[…,i,j], t[i,j])`:
+# Arguments
+- `z` : a `CollocationVariable` from [`add_var_collocation`](@ref)
 
-| `basis` | residual |
-|---|---|
-| `StateForm` | `Σⱼ₌₀..ᴷ b[j] z[…,i,j] = z[…,i+1,0]` |
-| `DerivativeForm` | `z[…,i+1,0] − z[…,i,0] = h[i] Σⱼ₌₁..ᴷ b[j] f_ij` |
+# Keyword Arguments
+- `name` : when given as `Val(:name)`, registers the constraint in `core` for later retrieval as `core.name` or `model.name`. See [`@add_con_continuity`](@ref) for the idiomatic named interface.
+- remaining kwargs passed on to `ExaModels.add_con`: `lcon`, `ucon`, `start`, `tag`
 
-## Keyword Arguments
-- `name` : When given as `Val(:name)`, registers the constraint in `core` for later retrieval as `core.name` or `model.name`. See [`@add_con_continuity`](@ref) for the idiomatic named interface.
-- Remaining keyword arguments are passed on to `ExaModels.add_con` and mean exactly what they do there: `lcon`, `ucon`, `start`, `tag`.
-
-## Example
+# Example
 ```julia
-julia> core, cont = add_con_continuity(core, z);
+julia> c, cont = add_con_continuity(c, z)
 ```
 """
 function add_con_continuity(
@@ -66,20 +57,21 @@ function add_con_continuity(
         core, _ = ExaModels.add_con!(core, con, Base.Generator(_state_stencil(z, nlead), st))
     else
         # 10.15a. Every row of a recorded collocation iterator is an f_ik, so it carries its
-        # own b[k] into the junction row of the slot it leads with. One augmentation per
-        # recorded right-hand side, since each is a structurally distinct expression.
+        # own b[k] into the junction row of the slot it names. One augmentation per recorded
+        # right-hand side, since each is a structurally distinct expression.
         pos = Dict(r => n for (n, r) in enumerate(rows))
-        hp = mesh.hpar
+        hp = _hpar(mesh)
         for r in res
-            L = _row_layout(r.rows, nlead, _nmesh(core), :add_con_continuity)
-            keep = [d for d in r.rows if d[L.i] < N && haskey(pos, (_slot(d, L)..., d[L.i]))]
+            L = r.fwhere
+            keep = [d for d in r.fiter if d[L.i] < N && haskey(pos, (_slotof(d, L)..., d[L.i]))]
             isempty(keep) && continue
+            nrow = length(first(r.fiter))
             st = hp === nothing ?
-                [(d..., pos[(_slot(d, L)..., d[L.i])], -mesh.h[d[L.i]] * w.b[d[L.k]]) for d in keep] :
-                [(d..., pos[(_slot(d, L)..., d[L.i])], w.b[d[L.k]]) for d in keep]
+                [(d..., pos[(_slotof(d, L)..., d[L.i])], -_hval(mesh)[d[L.i]] * w.b[d[L.k]]) for d in keep] :
+                [(d..., pos[(_slotof(d, L)..., d[L.i])], w.b[d[L.k]]) for d in keep]
             aug = hp === nothing ?
-                (s -> s[L.len + 1] => s[L.len + 2] * r.f(s)) :
-                (s -> s[L.len + 1] => -hp[s[L.i]] * s[L.len + 2] * r.f(s))
+                (s -> s[nrow + 1] => s[nrow + 2] * r.f(s)) :
+                (s -> s[nrow + 1] => -hp[s[L.i]] * s[nrow + 2] * r.f(s))
             core, _ = ExaModels.add_con!(core, con, Base.Generator(aug, st))
         end
     end
@@ -92,7 +84,7 @@ end
 # right-hand sides, not at all and it would be silently left untied.
 function _covered_slots(res, z, who::Symbol)
     slots = Any[]
-    for r in res, s in r.slots
+    for r in res, s in r.fwhich
         s in slots && throw(ArgumentError(
             "$who: two collocation calls cover $(_slotstr(s)), so its junction row would " *
             "integrate both right-hand sides"
@@ -139,17 +131,16 @@ _junction_base(z, nlead) = nlead == 0 ?
 
 Macro interface for [`add_con_continuity`](@ref). Updates `core` in the calling scope.
 
-- **Named** (`@add_con_continuity(core, cont, z)`): binds `cont` to the new `Constraint` in
-  the local scope and registers it in `core` for later retrieval as `core.cont` or
-  `model.cont`.
+- **Named** (`@add_con_continuity(core, name, z)`): binds `name` to the new `Constraint` in the
+  local scope and registers it in `core` for later retrieval as `core.name` or `model.name`.
 - **Anonymous** (`@add_con_continuity(core, z)`): equivalent to
-  `core, cont = add_con_continuity(core, z)`.
+  `c, name = add_con_continuity(c, z)`.
 
 Accepts the same keyword arguments as [`add_con_continuity`](@ref).
 
-## Example
+# Example
 ```julia
-@add_con_continuity(core, cont, z)
+julia> @add_con_continuity(c, cont, z)
 ```
 """
 macro add_con_continuity(exs...)

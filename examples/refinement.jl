@@ -29,14 +29,13 @@ zexact(t) = atan(A * (t - T0))
 function example_model(nodes, K = 3)
     # Create CollocationExaCore with adaptive mesh (t is an ExaModels parameter)
     core = CollocationExaCore(nodes, K; adaptive = true)
-    t = core.mesh.tpar
 
     # Create CollocationVariable
     @add_var_collocation(core, z)
 
-    # Create collocation constraints    
-    itr = [(i, k) for i in 1:core.N, k in 1:core.K]
-    @add_con_collocation(core, coll, z, rhs(z[i, k], t[i, k]) for (i, k) in itr)
+    # Create collocation constraints
+    # NOTE: nothing varies but the mesh, so there is no iterator to write
+    @add_con_collocation(core, coll, z[], rhs(z, t))
 
     # Create continuity constraints
     @add_con_continuity(core, cont, z)
@@ -80,15 +79,11 @@ _interp(zi, xn, tau) = sum(
     for j in eachindex(xn)
 )
 
-# The layout add_con_collocation gave a row: (slot..., anything else f varies with..., i, k),
-# and a trailing t on a numeric mesh
-function _rowlayout(model, r)
-    len = length(first(r.rows))
-    nmesh = model.adaptive ? 2 : 3
-    return (; len = len, nlead = length(r.var.dims), i = len - nmesh + 1, k = len - nmesh + 2)
-end
+# Where a residual's rows keep the interval, collocation and slot indices. add_con_collocation
+# recorded it, so nothing here has to reconstruct it.
+_rowlayout(_, r) = r.fwhere
 
-_slotof(d, L) = ntuple(j -> d[j], L.nlead)
+_slotof(d, L) = ExaModelsCollocation._slotof(d, L)
 
 # An f reading neither a variable nor a parameter traces to a plain number rather than a node
 _nodeval(v, xs, ts) = v isa Real ? v : v(nothing, xs, ts)
@@ -103,7 +98,7 @@ function _scratch_eval(model, r, row)
 end
 
 # Every row of a residual keyed by the point it names, in one pass over its slots x N x K rows
-_scratch_rows(r, L) = Dict((_slotof(d, L)..., d[L.i], d[L.k]) => d for d in r.rows)
+_scratch_rows(r, L) = Dict((_slotof(d, L)..., d[L.i], d[L.k]) => d for d in r.fiter)
 
 function _scratch_row(rows, r, s, i, k)
     haskey(rows, (s..., i, k)) || error(
@@ -116,7 +111,7 @@ end
 # ----- Error estimate -----
 
 function estimate_error_phr(model, x; kscratch = 1)
-    nodes, h, N, taus = model.nodes, model.mesh.h, model.N, model.weights.taus
+    nodes, h, N, taus = model.nodes, diff(model.nodes), model.N, model.weights.taus
 
     # The K+1 roots (non-collocation points to compare)
     fine = Collocation([0.0, 1.0], model.K + 1;
@@ -127,10 +122,10 @@ function estimate_error_phr(model, x; kscratch = 1)
     tau, Omega = fine.mode.weights.taus, fine.mode.weights.A
 
     # Every block is interpolated, not just the collocated ones: f reads controls there too
-    bslots = [(z, s, _taunodes(z, taus)...) for z in model.blocks
+    bslots = [(z, s, _taunodes(z, taus)...) for z in model.block
               for s in Iterators.product(z.dims...)]
-    lookup = [(_rowlayout(model, r), _scratch_rows(r, _rowlayout(model, r))) for r in model.residuals]
-    rslots = [(r, s, lk) for (r, lk) in zip(model.residuals, lookup) for s in r.slots]
+    lookup = [(_rowlayout(model, r), _scratch_rows(r, _rowlayout(model, r))) for r in model.resid]
+    rslots = [(r, s, lk) for (r, lk) in zip(model.resid, lookup) for s in r.fwhich]
     ev = [[_scratch_eval(model, r, _scratch_row(rows, r, s, i, kscratch)) for i in 1:N]
           for (r, s, (_, rows)) in rslots]
 
@@ -146,7 +141,7 @@ function estimate_error_phr(model, x; kscratch = 1)
             zi = [x[_xidx(z, sl, i, k)] for k in ks]
             xs[_xidx(z, sl, i, kscratch)] = _interp(zi, xn, s)
         end
-        model.adaptive && (ts[model.mesh.tpar[i, kscratch].i] = tf)
+        model.adaptive && (ts[model.mesh.t[i, kscratch].i] = tf)
 
         # the RHS function evaluated at the K+1 roots
         for n in eachindex(ev)
@@ -184,17 +179,17 @@ end
 # Invert the collocation equations for f and compare against f evaluated there: says whether the
 # NLP satisfied its collocation rows, not how accurate the discretization is
 function residual_mismatch(model, x)
-    h, N, K, A = model.mesh.h, model.N, model.K, model.weights.A
+    h, N, K, A = diff(model.nodes), model.N, model.K, model.weights.A
     ts = _hostcopy(model.θ)
     worst = 0.0
 
     # DerivativeForm with tau_1 = 0 leaves that row reading 0 = 0, so f is not recoverable there
     !(model.basis isa StateForm) && first(model.weights.taus) == 0 && return NaN
 
-    for r in model.residuals
+    for r in model.resid
         L, z = _rowlayout(model, r), r.var
         rows = _scratch_rows(r, L)
-        for s in r.slots, i in 1:N
+        for s in r.fwhich, i in 1:N
             got = [_nodeval(r.f(_scratch_row(rows, r, s, i, k)), x, ts) for k in 1:K]
             zi = [x[_xidx(z, s, i, k)] for k in z.krange]
             want = model.basis isa StateForm ?
@@ -210,7 +205,7 @@ end
 # ----- Mesh update -----
 
 function find_new_nodes(model, err; floor_frac = 0.1, passes = 2)
-    nodes, h, N = model.nodes, model.mesh.h, model.N
+    nodes, h, N = model.nodes, diff(model.nodes), model.N
 
     # de Boor density (?)
     rho = err .^ (1 / (model.K + 1)) ./ h
@@ -280,7 +275,7 @@ function solve_adaptively(
 
         # find new node placements based on error + de Boor equidistributino
         new = find_new_nodes(model, err)
-        moved = movement(new, nodes, model.mesh.h)
+        moved = movement(new, nodes, diff(model.nodes))
         verbose && println(
             "iteration $it: max error = $(maximum(err)), movement = $moved, " *
             "collocation mismatch = $(residual_mismatch(model, x))"
@@ -398,7 +393,7 @@ for (it, s) in enumerate(history)
     znode = [s.zsol[:, 1]; s.zsol[end, end]]
     println("iteration $(it - 1): |z(T) - exact| = $(abs(znode[end] - zexact(TEND)))")
 end
-png = joinpath(@__DIR__, "r_refinement.png")
+png = joinpath(@__DIR__, "refinement.png")
 savefig(
     plot(
         plot_mesh_history(history, zexact),
