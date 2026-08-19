@@ -322,7 +322,6 @@ function colorbar_strip(clims; rows = 256)
     )
 end
 
-# Display and plot
 function plot_mesh_history(history, exact)
     t = reduce(vcat, s.nodes for s in history)
     iteration = reduce(vcat, fill(i - 1, length(s.nodes)) for (i, s) in enumerate(history))
@@ -379,7 +378,7 @@ for (it, s) in enumerate(history)
     znode = [s.zsol[:, 1]; s.zsol[end, end]]
     println("iteration $(it - 1): |z(T) - exact| = $(abs(znode[end] - zexact(TEND)))")
 end
-png = joinpath(@__DIR__, "refinement.png")
+png = joinpath(@__DIR__, "mesh-refinement.png")
 savefig(
     plot(
         plot_mesh_history(history, zexact),

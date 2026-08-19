@@ -1,6 +1,5 @@
-# Bruno et al. (2016), J Exp Bot 67(21):5993-6005, as posed in the PEtab Benchmark
-# Collection (Bruno_JExpBot2016). Parameter estimation: seven species, six conditions, one
-# set of rate constants, and a Gaussian negative log-likelihood over 77 measurements.
+# Bruno et al. (2016), J Exp Bot 67(21):5993-6005
+# Bruno_JExptBot2016 from Benchmarking Initiative's PEtab Collection
 
 using ExaModels
 using ExaModelsCollocation
@@ -8,40 +7,11 @@ using MadNLP
 
 # ----- Problem data from PEtab file -----
 
-# Species, in the order of listOfSpecies
 const BCAR, BCRY, B10, BIO, OHB10, OHBIO, ZEA = 1:7
 const Nz, Nc, Ncv = 7, 6, 6
 
-# Collocation degree, 4 in test/api/bruno.jl
-const KDEG = 4
-
-# Six first-order reactions, v_r = a_r * (its reactant):
-#
-#   v1  bcar  -> b10 + bio      v4  bcry  -> bio + ohb10
-#   v2  b10   -> bio            v5  ohb10 -> ohbio
-#   v3  bcry  -> b10 + ohbio    v6  zea   -> ohb10 + ohbio
-#
-#   d(bcar)/dt  = -v1                d(bio)/dt   = v1 + v2 + v4
-#   d(bcry)/dt  = -v3 - v4           d(ohb10)/dt = v4 - v5 + v6
-#   d(b10)/dt   = v1 - v2 + v3       d(ohbio)/dt = v3 + v5 + v6
-#                                    d(zea)/dt   = -v6
-#
-# Rate index cvidx, in the column order of the condition table
-const K5, KB1, KB2, KC1, KC2, KC4 = 1:6
-
-# The same equations in plain Julia, for the state guess
-function bruno_rhs(z, a)
-    bcar, bcry, b10, bio, ohb10, ohbio, zea = z
-    v1, v2, v3 = a[KB1] * bcar, a[KB2] * b10, a[KC1] * bcry
-    v4, v5, v6 = a[KC2] * bcry, a[KC4] * ohb10, a[K5] * zea
-    return [-v1, -v3 - v4, v1 - v2 + v3, v1 + v2 + v4, v4 - v5 + v6, v3 + v5 + v6, -v6]
-end
-
-# ------------------------------------------------------------- parameters_Bruno.tsv ----
-# All thirteen estimated on a log10 scale over [1e-5, 1e3]: p = log10(parameter), and the
-# model reads the physical value as 10^p. The nominal column is the published optimum.
 const INIT_B10, INIT_BCAR1, INIT_BCAR2, INIT_BCRY, INIT_OHB10, INIT_ZEA = 1:6
-const KP = [7, 8, 9, 10, 11, 12]   # rate cvidx -> its parameter index
+const KP = [7, 8, 9, 10, 11, 12]
 const SZEA = 13
 
 const pnom = [
@@ -59,13 +29,11 @@ const pnom = [
     0.006082700899195,  # kc4
     0.516831766210391,  # szea
 ]
+
 const Np = length(pnom)
 const θnom = log10.(pnom)
 const θLB, θUB = fill(log10(1e-5), Np), fill(log10(1e3), Np)
 
-# ------------------------------------------------- experimentalCondition_Bruno.tsv ----
-# Rows are the six conditions, columns the multipliers (k5, kb1, kb2, kc1, kc2, kc4):
-# a rate is off, taken as is, or scaled by the estimated factor szea.
 const off, on, sc = :off, :on, :szea
 const mult = [
     off off on  on  off on    # model1_data1
@@ -76,14 +44,10 @@ const mult = [
     sc  off off off off sc    # model1_data6
 ]
 
-# Each condition starts one species from one parameter; everything else is 0
 const ic_p = [(B10, 1, INIT_B10), (BCAR, 2, INIT_BCAR1), (BCAR, 3, INIT_BCAR2),
               (BCRY, 4, INIT_BCRY), (OHB10, 5, INIT_OHB10), (ZEA, 6, INIT_ZEA)]
 const ic_0 = [(v, c) for v in 1:Nz, c in 1:Nc if !any(q -> q[1] == v && q[2] == c, ic_p)]
 
-# ------------------------------------------------------- measurementData_Bruno.tsv ----
-# One entry per (observable, condition); every observable is a single species. Columns
-# are time, measurement, and sigma.
 const meas = [
     (B10, 1, [  5.0  3.973385  0.406451
                15.0  3.976118  0.406728
@@ -168,11 +132,29 @@ const Nm = sum(size(tbl, 1) for (_, _, tbl) in meas)
 # Known optimal solution
 const NLL_REF = -46.68818145
 
+# ----- right-hand side function -----
+
+const K5, KB1, KB2, KC1, KC2, KC4 = 1:6
+
+# right-hand side functions
+function bruno_rhs(z, a)
+    bcar, bcry, b10, bio, ohb10, ohbio, zea = z
+    v1, v2, v3 = a[KB1] * bcar, a[KB2] * b10, a[KC1] * bcry
+    v4, v5, v6 = a[KC2] * bcry, a[KC4] * ohb10, a[K5] * zea
+    return [
+        -v1, 
+        -v3 - v4, 
+        v1 - v2 + v3, 
+        v1 + v2 + v4, 
+        v4 - v5 + v6, 
+        v3 + v5 + v6, 
+        -v6
+    ]
+end
+
 # ----- Mesh nodes -----
 
-# Uniform mesh over [0, TEND = 180.0]
-# Every measurement time is a multiple of 5, so we choose N = 36
-const TEND, NMESH = 180.0, 36
+const TEND, NMESH, KDEG = 180.0, 36, 4
 
 # ----- Obtain good initial guess for discretized states -----
 
@@ -199,6 +181,7 @@ rates(θ) = [mult[c, cvidx] === off ? 0.0 :
             mult[c, cvidx] === on ? 10.0^θ[KP[cvidx]] :
             10.0^(θ[KP[cvidx]] + θ[SZEA])
             for cvidx in 1:Ncv, c in 1:Nc]
+
 function state0(θ)
     z0 = zeros(Nz, Nc)
     for (v, c, m) in ic_p
@@ -208,14 +191,13 @@ function state0(θ)
 end
 
 # ----- Create ExaModel -----
-function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH, adaptive = false)
+function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH)
     nodes = range(0.0, TEND; length = N + 1)
 
     # Create CollocationExaCore
-    core = CollocationExaCore(nodes, K; adaptive)
+    core = CollocationExaCore(nodes, K)
 
-    # Solve ODE system at nominal θ to obtain initial guess for discretized states
-    # NOTE: core.mesh.t is a parameter block on an adaptive mesh, so the times are recomputed
+    # Solve ODE system at nominal θ to obtain good initial guess
     h, taus = diff(core.nodes), core.weights.taus
     ik = [(i, k) for i in 1:N for k in 0:K]
     ts = [core.nodes[i] + (k == 0 ? 0.0 : h[i] * taus[k]) for (i, k) in ik]
@@ -235,16 +217,16 @@ function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH, adaptive = false)
     ExaModels.@add_var(core, p, 1:Np; lvar = θLB, uvar = θUB, start = θ0)
 
     # Create auxiliary variables and constraints for condition-dependent variables
-    ExaModels.@add_var(core, cv, 1:Ncv, 1:Nc; start = cv0)
-    ExaModels.@add_con(core, rate_off,
+    @add_var(core, cv, 1:Ncv, 1:Nc; start = cv0)
+    @add_con(core, rate_off,
         cv[cvidx,c]
         for (cvidx,c) in [(cvidx,c) for cvidx in 1:Ncv, c in 1:Nc if mult[c,cvidx] === off]
     )
-    ExaModels.@add_con(core, rate_on,
+    @add_con(core, rate_on,
         cv[cvidx,c] - exp(log(10.0) * p[m])
         for (cvidx,c,m) in [(cvidx,c,KP[cvidx]) for cvidx in 1:Ncv, c in 1:Nc if mult[c,cvidx] === on]
     )
-    ExaModels.@add_con(core, rate_scaled,
+    @add_con(core, rate_scaled,
         cv[cvidx,c] - exp(log(10.0) * (p[m] + p[SZEA]))
         for (cvidx,c,m) in [(cvidx,c,KP[cvidx]) for cvidx in 1:Ncv, c in 1:Nc if mult[c,cvidx] === sc]
     )
@@ -283,11 +265,11 @@ function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH, adaptive = false)
     @add_con_continuity(core, cont, z)
 
     # Create initial condition constraints
-    ExaModels.@add_con(core, ic_zero,
+    @add_con(core, ic_zero,
         z[v,c,1,0]
         for (v,c) in ic_0
     )
-    ExaModels.@add_con(core, ic_par,
+    @add_con(core, ic_par,
         z[v,c,1,0] - exp(log(10.0) * p[m])
         for (v,c,m) in ic_p
     )
@@ -300,7 +282,7 @@ function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH, adaptive = false)
         r == 0 || error("measurement at t = $tm is not on an interval's right end")
         push!(itr_obj, (v, c, i, ym, sd, log(sd) + 0.5 * log(2π)))
     end
-    ExaModels.@add_obj(core,
+    @add_obj(core,
         0.5 * ((z[v,c,i,K] - ym) / sd)^2 + cst
         for (v,c,i,ym,sd,cst) in itr_obj
     )

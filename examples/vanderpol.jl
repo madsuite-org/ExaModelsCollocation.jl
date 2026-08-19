@@ -54,7 +54,6 @@ model = examodel_van_der_pol()
 # Solve
 result = madnlp(model; tol = 1e-8)
 
-# solution() is 1-based, so a k = 0,...,K block lands on 1,...,K+1
 zsol = solution(result, model.z)
 println("status    = $(result.status)")
 println("objective = $(result.objective)")
