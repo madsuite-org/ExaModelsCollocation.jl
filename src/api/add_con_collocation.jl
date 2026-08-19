@@ -25,15 +25,17 @@ end
 #
 #     (anything the right-hand side varies with..., i, k)
 #
-# i and k trail, t is appended past them, and where the slot indices sit is the probe's to say.
-struct RowLayout{S}
-    len::Int     # length of the row, one short of a numeric mesh's rows
+# i and k trail, the mesh's own data is appended past them, and where the slot indices sit is
+# the probe's to say.
+struct RowLayout{S, M}
+    len::Int     # length of the row, before the mesh appends its own data
     i::Int       # position of the interval index
     k::Int       # position of the collocation index
     slot::S      # per declared dimension: a row position, or a Fixed literal
+    m::M         # where the mesh index sits, or a Fixed one for a block pinned to a mesh
 end
 
-function _row_layout(itr, slot, who::Symbol)
+function _row_layout(itr, slot, meshat, who::Symbol)
     isempty(itr) && throw(ArgumentError(
         "$who: the iterator is empty, so there is no collocation constraint to add."
     ))
@@ -41,11 +43,18 @@ function _row_layout(itr, slot, who::Symbol)
     len >= 2 || throw(ArgumentError(
         "$who: the iterator rows must end in (…, i, k); the ones given carry $len entries."
     ))
-    return RowLayout(len, len - 1, len, slot)
+    return RowLayout(len, len - 1, len, slot, meshat)
 end
 
+# A row position or a literal, resolved against the row
+_at(p::Fixed, r) = p.v
+_at(p, r) = r[p]
+
 # The slot of z a row constrains
-_slotof(d, L::RowLayout) = map(p -> p isa Fixed ? p.v : d[p], L.slot)
+_slotof(d, L::RowLayout) = map(p -> _at(p, d), L.slot)
+
+# The mesh a row belongs to: the entry its block's mesh axis names, or the one it is pinned to
+_meshof(d, L::RowLayout) = _at(L.m, d)
 
 # Position of the base row a given row of the iterator feeds at collocation point k
 function _basepos(pos, d, L::RowLayout, k)
@@ -110,7 +119,53 @@ end
 
 # t on an adaptive mesh, built at trace time so no node ever enters the data. Rebuilt entry by
 # entry rather than splatted, since a traced row defines indexed_iterate but not iterate.
-_appendt(r, ::Val{L}, tp, ip, kp) where {L} = (ntuple(j -> r[j], Val(L))..., tp[r[ip], r[kp]])
+_appendt(r, ::Val{L}, tp, lay) where {L} =
+    (ntuple(j -> r[j], Val(L))..., _tat(tp, _meshof(r, lay), r[lay.i], r[lay.k]))
+
+# t under a horizon scale, off the two constants `_trows` left past the row
+_scalet(r, ::Val{L}, ts, lay) where {L} =
+    (ntuple(j -> r[j], Val(L))..., r[L + 1] + ts[_meshof(r, lay)] * r[L + 2])
+
+# ---------- where h and t come from ----------
+#
+#                    h                                  t
+#   numeric          -h[mi] folds into the constant     appended to the row as data
+#   adaptive         the bare weight, h off hpar        built off tpar at trace time
+#   unknown horizon  -h[mi]/T folds in, scale off row   t0 + scale*share, share appended as data
+#
+# Two pairs, each writing into the data row and reading it back at trace time, so a residual site
+# names the quantity and the mesh decides the rest. The sign always rides in the constant, so the
+# traced factor is whatever is left of h. `mi` is the mesh the row belongs to, the literal 1 for
+# one mesh.
+
+# The width folded into a row constant: the whole interval numerically, its share of the nominal
+# span under a scale, and unity where a traced factor carries it instead.
+_hwidth(m, mi, i) = _is_unknown_horizon(m) ? _hat(_hval(m), mi, i) / _tnom(m, mi) :
+    _isadaptive(m) ? one(eltype(_hval(m))) : _hat(_hval(m), mi, i)
+
+# The constant a row stores for a weight `a` at interval `i` of mesh `mi`
+_hcoef(m, mi, i, a) = -_hwidth(m, mi, i) * a
+
+# -h*a*expr, off a row carrying that constant at `p`, which on a numeric mesh is all of it
+_hterm(m, L, r, p, expr) =
+    _is_unknown_horizon(m) ? _horizon_scale(m)[_meshof(r, L)] * r[p] * expr :
+    _isadaptive(m) ? _hat(_hpar(m), _meshof(r, L), r[L.i]) * r[p] * expr :
+    r[p] * expr
+
+# The rows ExaModels stores. A numeric mesh carries t as data, an unknown horizon its start and
+# the relative share, both constants, since a traced index cannot reach into a plain array.
+_trows(m, itr, L) = _is_unknown_horizon(m) ? [_share(m, d, L) for d in itr] :
+    _isadaptive(m) ? itr :
+    [(d..., _tat(_tval(m), _meshof(d, L), d[L.i], d[L.k])) for d in itr]
+
+_share(m, d, L) = (mi = _meshof(d, L);
+    (d..., _t0(m, mi), (_tat(_tval(m), mi, d[L.i], d[L.k]) - _t0(m, mi)) / _tnom(m, mi)))
+
+# The right-hand side read off one of those rows
+_rhsof(m, gen, L) = _is_unknown_horizon(m) ?
+    (r -> last(gen.f(_scalet(r, Val(L.len), _horizon_scale(m), L)))) :
+    _isadaptive(m) ? (r -> last(gen.f(_appendt(r, Val(L.len), _tpar(m), L)))) :
+    (r -> last(gen.f(r)))
 
 """
     add_con_collocation(core, z[dims...] => generator; name = nothing, kwargs...)
@@ -155,27 +210,22 @@ function add_con_collocation(
     ))
 
     mesh, w = _mesh(core), _weights(core)
-    hp, tp = _hpar(mesh), _tpar(mesh)
     itr = _crossrows(
         _flat(gen.iter), arity, _nintervals(core), K, :add_con_collocation,
     )
-    L = _row_layout(itr, slot, :add_con_collocation)
+    L = _row_layout(itr, slot, _meshpos(z, slot), :add_con_collocation)
 
-    # The rows ExaModels stores, and the right-hand side read off one of them. A numeric mesh
-    # carries t as data, an adaptive one indexes it at trace time.
-    rows = tp === nothing ? [(d..., _tval(mesh)[d[L.i], d[L.k]]) for d in itr] : itr
-    f = tp === nothing ? (r -> last(gen.f(r))) :
-        (r -> last(gen.f(_appendt(r, Val(L.len), tp, L.i, L.k))))
-    nrow = L.len + (tp === nothing ? 1 : 0)
+    rows = _trows(mesh, itr, L)
+    f = _rhsof(mesh, gen, L)
+    nrow = length(first(rows))
 
     local con
     if _isstateform(core)
-        # 10.7. Base rows carry -h f; the weights ride on the state, j = 0,...,K. On a
-        # numeric mesh h is appended past the row, in plain Julia before any tracing, so f
-        # reads its own row and leaves the entry past it alone; on an adaptive one it is
-        # indexed off the parameter block by the row's own i.
-        base = hp === nothing ? [(r..., _hval(mesh)[r[L.i]]) for r in rows] : rows
-        rhs = hp === nothing ? (r -> -r[nrow + 1] * f(r)) : (r -> -hp[r[L.i]] * f(r))
+        # 10.7. Base rows carry -h f; the weights ride on the state, j = 0,...,K. The h constant
+        # is appended past the row in plain Julia before any tracing, so f reads its own row and
+        # leaves the entry past it alone.
+        base = [(r..., _hcoef(mesh, _meshof(r, L), r[L.i], one(eltype(w.A)))) for r in rows]
+        rhs = r -> _hterm(mesh, L, r, nrow + 1, f(r))
         core, con = ExaModels.add_con(
             core, Base.Generator(rhs, base); name = name, kwargs...,
         )
@@ -195,18 +245,11 @@ function add_con_collocation(
 
         # Each row of the iterator is an f_ij, carrying A[j,k] into the base row of every k.
         pos = Dict(r => n for (n, r) in enumerate(base))
-        st = hp === nothing ?
-            vec([
-                (rows[n]..., _basepos(pos, d, L, k), -_hval(mesh)[d[L.i]] * w.A[d[L.k], k])
-                for (n, d) in enumerate(itr), k in 1:K
-            ]) :
-            vec([
-                (rows[n]..., _basepos(pos, d, L, k), w.A[d[L.k], k])
-                for (n, d) in enumerate(itr), k in 1:K
-            ])
-        aug = hp === nothing ?
-            (s -> s[nrow + 1] => s[nrow + 2] * f(s)) :
-            (s -> s[nrow + 1] => -hp[s[L.i]] * s[nrow + 2] * f(s))
+        st = vec([
+            (rows[n]..., _basepos(pos, d, L, k), _hcoef(mesh, _meshof(d, L), d[L.i], w.A[d[L.k], k]))
+            for (n, d) in enumerate(itr), k in 1:K
+        ])
+        aug = s -> s[nrow + 1] => _hterm(mesh, L, s, nrow + 2, f(s))
         core, _ = ExaModels.add_con!(core, con, Base.Generator(aug, st))
     end
 
@@ -216,21 +259,23 @@ function add_con_collocation(
     return core, con
 end
 
-# The stencils that index z, one per leading-dimension count _block_layout admits. A block
-# declared with no dimensions is z[i,k], so its rows carry no slot at all.
+# `n` entries of a row from `off`, taken by position because a traced row defines
+# indexed_iterate but not iterate. The count is a Val so the stencil is built once, not per row.
+_rowidx(r, off, ::Val{n}) where {n} = ntuple(q -> r[off + q], Val(n))
+
+# The stencils that index z. A block declared with no dimensions is z[i,k], so its rows carry
+# no slot at all, which _rowidx reads as the empty tuple.
 # n => a * z[slot..., i, j], off a row (n, a, slot..., i, j)
-_state_stencil(z, nlead) = nlead == 0 ?
-    (s -> s[1] => s[2] * z[s[3], s[4]]) :
-    nlead == 1 ?
-    (s -> s[1] => s[2] * z[s[3], s[4], s[5]]) :
-    (s -> s[1] => s[2] * z[s[3], s[4], s[5], s[6]])
+function _state_stencil(z, nlead)
+    V = Val(nlead + 2)
+    return s -> s[1] => s[2] * z[_rowidx(s, 2, V)...]
+end
 
 # z[slot..., i, k] - z[slot..., i, 0], off a row (slot..., i, k)
-_derivative_base(z, nlead) = nlead == 0 ?
-    (r -> z[r[1], r[2]] - z[r[1], 0]) :
-    nlead == 1 ?
-    (r -> z[r[1], r[2], r[3]] - z[r[1], r[2], 0]) :
-    (r -> z[r[1], r[2], r[3], r[4]] - z[r[1], r[2], r[3], 0])
+function _derivative_base(z, nlead)
+    V, S = Val(nlead + 2), Val(nlead + 1)
+    return r -> z[_rowidx(r, 0, V)...] - z[_rowidx(r, 0, S)..., 0]
+end
 
 """
     @add_con_collocation(core, [name,] z[dims...], generator; kwargs...)

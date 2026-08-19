@@ -6,11 +6,11 @@ Helper functions for orthogonal collocation in [ExaModels.jl](https://github.com
 
 ### Feature Summary
 - `CollocationExaCore` : an `ExaCore` containing collocation metadata
-- `set_nodes!` : relocate mesh node placeemnts
+- `set_nodes!` : relocate mesh node placements
 - `add_var_collocation`/`@add_var_collocation` : creates variable over every collocation point
 - `add_con_collocation`/`@add_con_collocation` : creates collocation constraints over every collocation point
 - `add_con_continuity`/`@add_con_continuity` : creates continuity constraints over every interval
-- `interpolate` : evaluates interpolating polynomials at any time in the mesh
+- `interpolate` : evaluates the interpolating polynomial solution profile at any time in the mesh
 
 Refer to `examples/*` for complete examples.
 
@@ -20,20 +20,21 @@ Refer to `examples/*` for complete examples.
 
 ```julia
 CollocationExaCore(nodes, K; roots = GaussRadau(), basis = StateForm(), 
-  polynomial = Lagrange(), adaptive = false, kwargs...)
+  polynomial = Lagrange(), adaptive = false, unknown_horizon = false, kwargs...)
 ```
 Creates an intermediate data object `CollocationExaCore`, which contains collocation 
 metadata used by collocation helper functions.
 
 ### Arguments
-- `nodes` : interval boundary placements for `N+1` boundaries for `N` intervals
+- `nodes` : vector of interval boundary placements for `N+1` boundaries for `N` intervals in the mesh, or a vector of `M` meshes
 - `K`     : degree of interpolating polynomial
 
 ### Keyword Arguments
-- `roots`      : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
-- `basis`      : differential-state representation, `StateForm()` or `DerivativeForm()`
-- `polynomial` : interpolating polynomial, `Lagrange()`
-- `adaptive`   : whether interval widths are mutable `ExaModels` parameters
+- `roots`           : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
+- `basis`           : differential-state representation, `StateForm()` or `DerivativeForm()`
+- `polynomial`      : interpolating polynomial, `Lagrange()`
+- `adaptive`        : interval widths are mutable `ExaModels` parameters
+- `unknown_horizon` : time horizon is a decision variable
 - remaining kwargs passed on to `ExaCore`: `backend`, `minimize`, `name`
 
 ### Fields
@@ -41,7 +42,7 @@ metadata used by collocation helper functions.
 - `mesh`  : `nodes`, `h` interval lengths, `t` time
 - `block` : `CollocationVariable` dimensions
 - `resid` : `CollocationVariable` right-hand side functions
-- `N`, `K`, `nodes`, `adaptive`
+- `N`, `K`, `M`, `nodes`, `adaptive`, `unknown_horizon`
 
 ### Example
 ```julia
@@ -49,7 +50,7 @@ julia> nodes = range(0.0, 5.0; length = 21) # 21 interval boundary placements
 
 julia> core = CollocationExaCore(nodes, 3) # N=20, K=3
 
-julia> core = ExaCore(concrete = Val(true); tag = Collocation(nodes, 3)) # also works
+julia> core = ExaCore(tag = Collocation(nodes, 3)) # also works
 
 julia> core = ExaCore(core; tag = Collocation(nodes, 3)) # also works
 ```
@@ -59,31 +60,38 @@ julia> core = ExaCore(core; tag = Collocation(nodes, 3)) # also works
 ## `set_nodes!`
 
 ```julia
-set_nodes!(model, nodes)
+set_nodes!(model, nodes; mesh = nothing)
 ```
 
-Relocates the placement of `nodes` of a `CollocationExaModel`, given `adaptive = true`.
+Relocates the placement of `nodes` for a `mesh` of a `CollocationExaModel`, given `adaptive = true`.
 
 ---
 
 ## `add_var_collocation`
 
 ```julia
-add_var_collocation(core, dims...; include_boundary = true, name = nothing, kwargs...)
+add_var_collocation(core, dims...; include_boundary = true, mesh = nothing, name = nothing, kwargs...)
 ```
 
 Adds a `CollocationVariable` with dimensions `dims` and appended mesh indicies from `CollocationExaCore` to `core`.
-Mesh indicies consist of the interval index `i in 1:N` and interpolation index `k in krange`.
+Mesh indicies consist of the mesh index `m in 1:M` if `M > 1`, the interval index `i in 1:N`, and interpolation index `k in krange`.
 Returns `(core, CollocationVariable)`.
 
 ### Keyword Arguments
 - `include_boundary` : `true` for `k = 0,…,K`, `false` for `k = 1,…,K`
+- `mesh` : pin the `CollocationVariable` to the chosen mesh for when adding constraints
 - `name` : when given as `Val(:name)`, registers the variable in `core` for later retrieval as `core.name`. See `@add_var_collocation` for the idiomatic named interface.
 - remaining kwargs passed on to `ExaModels.add_var`: `start`, `lvar`, `uvar`, `tag`
 
 ### Example
 ```julia
+# if M = 1,
 julia> c, z = add_var_collocation(c, 1:3, 1:2) # z[v,c,i,k], 3 × 2 × N × (K+1)
+
+# if M > 1,
+julia> c, y = add_var_collocation(c, 1:2; include_boundary = false, mesh = 2) # y[v,i,k], 2 × N × K
+
+julia> c, u = add_var_collocation(c) # u[m,i,k], M × N × (K+1)
 ```
 
 ---
@@ -218,20 +226,25 @@ julia> @add_con_continuity(c, cont, z)
 ## `interpolate`
 
 ```julia
-interpolate(model, result, z, t)
+interpolate(model, result, z, t; mesh = nothing)
 ```
 
 Evaluates the interpolating polynomial of a `CollocationVariable` at time `t`.
 
 ### Arguments
 - `model`  : `CollocationExaModel`
-- `result` : solved ExaModels result
+- `result` : solved `ExaModel` result
 - `z`      : `CollocationVariable` from `add_var_collocation`
 - `t`      : vector of times within the mesh
+
+### Keyword Argument
+- `mesh` : interpolate profile against the chosen mesh
 
 ### Example
 ```julia
 julia> zf = interpolate(model, result, z, last(model.nodes)) # z at terminal point
 
 julia> zs = interpolate(model, result, z, range(0.0, 1.0; length = 101)) # zs across uniform mesh
+
+julia> z2 = interpolate(model, result, z, 0.5; mesh = 2) # z(t = 0.5) on mesh 2
 ```

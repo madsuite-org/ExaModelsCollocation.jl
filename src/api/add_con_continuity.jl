@@ -60,18 +60,17 @@ function add_con_continuity(
         # own b[k] into the junction row of the slot it names. One augmentation per recorded
         # right-hand side, since each is a structurally distinct expression.
         pos = Dict(r => n for (n, r) in enumerate(rows))
-        hp = _hpar(mesh)
         for r in res
             L = r.fwhere
             keep = [d for d in r.fiter if d[L.i] < N && haskey(pos, (_slotof(d, L)..., d[L.i]))]
             isempty(keep) && continue
             nrow = length(first(r.fiter))
-            st = hp === nothing ?
-                [(d..., pos[(_slotof(d, L)..., d[L.i])], -_hval(mesh)[d[L.i]] * w.b[d[L.k]]) for d in keep] :
-                [(d..., pos[(_slotof(d, L)..., d[L.i])], w.b[d[L.k]]) for d in keep]
-            aug = hp === nothing ?
-                (s -> s[nrow + 1] => s[nrow + 2] * r.f(s)) :
-                (s -> s[nrow + 1] => -hp[s[L.i]] * s[nrow + 2] * r.f(s))
+            st = [
+                (d..., pos[(_slotof(d, L)..., d[L.i])],
+                 _hcoef(mesh, _meshof(d, L), d[L.i], w.b[d[L.k]]))
+                for d in keep
+            ]
+            aug = s -> s[nrow + 1] => _hterm(mesh, L, s, nrow + 2, r.f(s))
             core, _ = ExaModels.add_con!(core, con, Base.Generator(aug, st))
         end
     end
@@ -106,25 +105,22 @@ end
 _slotstr(s) = isempty(s) ? "the block" : "z[$(join(s, ", "))]"
 
 # z[zdims..., i, K] - z[zdims..., i+1, 0], off a junction row (zdims..., i)
-_cardinal_base(z, nlead, K) = nlead == 0 ?
-    (r -> z[r[1], K] - z[r[1] + 1, 0]) :
-    nlead == 1 ?
-    (r -> z[r[1], r[2], K] - z[r[1], r[2] + 1, 0]) :
-    (r -> z[r[1], r[2], r[3], K] - z[r[1], r[2], r[3] + 1, 0])
+function _cardinal_base(z, nlead, K)
+    S, p = Val(nlead), nlead + 1
+    return r -> z[_rowidx(r, 0, S)..., r[p], K] - z[_rowidx(r, 0, S)..., r[p] + 1, 0]
+end
 
 # -z[zdims..., i+1, 0], off a junction row (zdims..., i); the b-sum rides on the stencil
-_continuity_base(z, nlead) = nlead == 0 ?
-    (r -> -z[r[1] + 1, 0]) :
-    nlead == 1 ?
-    (r -> -z[r[1], r[2] + 1, 0]) :
-    (r -> -z[r[1], r[2], r[3] + 1, 0])
+function _continuity_base(z, nlead)
+    S, p = Val(nlead), nlead + 1
+    return r -> -z[_rowidx(r, 0, S)..., r[p] + 1, 0]
+end
 
 # z[zdims..., i+1, 0] - z[zdims..., i, 0], off a junction row (zdims..., i)
-_junction_base(z, nlead) = nlead == 0 ?
-    (r -> z[r[1] + 1, 0] - z[r[1], 0]) :
-    nlead == 1 ?
-    (r -> z[r[1], r[2] + 1, 0] - z[r[1], r[2], 0]) :
-    (r -> z[r[1], r[2], r[3] + 1, 0] - z[r[1], r[2], r[3], 0])
+function _junction_base(z, nlead)
+    S, p = Val(nlead), nlead + 1
+    return r -> z[_rowidx(r, 0, S)..., r[p] + 1, 0] - z[_rowidx(r, 0, S)..., r[p], 0]
+end
 
 """
     @add_con_continuity(core, [name,] z; kwargs...)

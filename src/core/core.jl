@@ -63,7 +63,7 @@ Contains collocation metadata as an `ExaCore` tag.
 
 # Example
 ```julia
-julia> core = ExaCore(concrete = Val(true); tag = Collocation(nodes, 3))
+julia> core = ExaCore(tag = Collocation(nodes, 3))
 
 julia> core = ExaCore(core; tag = Collocation(nodes, 3))
 ```
@@ -75,12 +75,12 @@ function Collocation(
         basis::AbstractBasis = StateForm(),
         polynomial::AbstractPolynomial = Lagrange(),
     )
-    length(nodes) >= 2 ||
-        throw(ArgumentError("nodes requires at least 2 interval boundaries, got $(length(nodes))"))
     K >= 1 || throw(ArgumentError("K must be at least 1, got $K"))
 
-    bounds = collect(float.(nodes))
-    all(>(0), diff(bounds)) ||
+    bounds = _nodes_input(nodes)
+    nb = size(bounds, ndims(bounds))
+    nb >= 2 || throw(ArgumentError("nodes requires at least 2 interval boundaries, got $nb"))
+    all(>(0), _interval_widths(bounds)) ||
         throw(ArgumentError("nodes must be strictly increasing along t"))
 
     # polynomial.jl: only Lagrange polynomial is implemented
@@ -112,6 +112,7 @@ Type alias for an `ExaCore` whose `tag` is a [`CollocationTag`](@ref).
         basis = StateForm(), 
         polynomial = Lagrange(), 
         adaptive = false,
+        unknown_horizon = false,
         kwargs...
     )
 
@@ -119,14 +120,15 @@ Creates an intermediate data object `CollocationExaCore`, which contains colloca
 used by collocation helper functions.
 
 # Arguments
-- `nodes` : interval boundary placements for `N+1` boundaries for `N` intervals
+- `nodes` : vector of interval boundary placements for `N+1` boundaries for `N` intervals in the mesh, or a vector of `M` meshes
 - `K`     : degree of interpolating polynomial
 
 # Keyword Arguments
-- `roots`      : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
-- `basis`      : differential-state representation, `StateForm()` or `DerivativeForm()`
-- `polynomial` : interpolating polynomial, `Lagrange()`
-- `adaptive`   : whether interval widths are mutable `ExaModels` parameters
+- `roots`           : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
+- `basis`           : differential-state representation, `StateForm()` or `DerivativeForm()`
+- `polynomial`      : interpolating polynomial, `Lagrange()`
+- `adaptive`        : interval widths are mutable `ExaModels` parameters
+- `unknown_horizon` : time horizon is a decision variable
 - remaining kwargs passed on to `ExaCore`: `backend`, `minimize`, `name`
 
 # Fields
@@ -134,13 +136,17 @@ used by collocation helper functions.
 - `mesh`  : `nodes`, `h` interval lengths, `t` time
 - `block` : `CollocationVariable` dimensions
 - `resid` : `CollocationVariable` right-hand side functions
-- `N`, `K`, `nodes`, `adaptive`
+- `N`, `K`, `M`, `nodes`, `adaptive`, `unknown_horizon`
 
 # Example
 ```julia
 julia> nodes = range(0.0, 5.0; length = 21) # 21 interval boundary placements
 
 julia> core = CollocationExaCore(nodes, 3) # N=20, K=3
+
+julia> core = ExaCore(tag = Collocation(nodes, 3)) # also works
+
+julia> core = ExaCore(core; tag = Collocation(nodes, 3)) # also works
 ```
 """
 const CollocationExaCore{T, VT, B} = ExaCore{T, VT, B, <:CollocationTag}
@@ -164,30 +170,47 @@ function CollocationExaCore(
         basis::AbstractBasis = StateForm(),
         polynomial::AbstractPolynomial = Lagrange(),
         adaptive::Bool = false,
+        unknown_horizon::Bool = false,
         kwargs...,
     ) where {T <: AbstractFloat}
 
-    haskey(kwargs, :concrete) && throw(ArgumentError(
-        "CollocationExaCore: `concrete` is always Val(true)." *
-        "LegacyExaCore not supported."
+    # Both move h and t, so a mesh under a horizon variable has nothing left for set_nodes! to set
+    adaptive && unknown_horizon && throw(ArgumentError(
+        "CollocationExaCore: `adaptive` and `unknown_horizon` both take over h and t; pick one."
     ))
 
     tag = Collocation(nodes, K; roots, basis, polynomial)
-    core = ExaCore(T; tag = tag, concrete = Val(true), kwargs...)
-    return adaptive ? _make_adaptive(core) : core
+    core = ExaCore(T; tag = tag, kwargs...)
+    adaptive && return _make_adaptive(core)
+    unknown_horizon && return _make_unknown_horizon(core)
+    return core
 end
 
 # `adaptive = true` build path
 function _make_adaptive(core)
     tag, mesh = _tag(core), _mesh(core)
     h, t = _hval(mesh), _tval(mesh)
-    core, hp = ExaModels.add_par(core, 1:length(h); value = h)
-    core, tp = ExaModels.add_par(core, 1:size(t, 1), 1:size(t, 2); value = t)
+    core, hp = ExaModels.add_par(core, map(n -> 1:n, size(h))...; value = h)
+    core, tp = ExaModels.add_par(core, map(n -> 1:n, size(t))...; value = t)
     return ExaCore(
         core;
         tag = CollocationTag(
             tag.mode, _with_parameters(mesh, hp, tp), tag.block, tag.resid,
         ),
+    )
+end
+
+# `unknown_horizon = true` build path. The mesh keeps its nominal numbers and the residuals read
+# the relative placements off them, so tscale at its start value reproduces the numeric mesh.
+function _make_unknown_horizon(core)
+    tag, mesh = _tag(core), _mesh(core)
+    tnom = _tnoms(mesh)
+    core, ts = ExaModels.add_var(
+        core, 1:length(tnom); start = tnom, lvar = zero(eltype(tnom)), name = Val(:tscale),
+    )
+    return ExaCore(
+        core;
+        tag = CollocationTag(tag.mode, _with_horizon_scale(mesh, ts), tag.block, tag.resid),
     )
 end
 
@@ -197,16 +220,19 @@ _tag(c) = getfield(c, :tag)
 _mesh(c) = _tag(c).mesh
 _mode(c) = _tag(c).mode
 _weights(c) = _mode(c).weights
-_nintervals(c) = length(_hval(_mesh(c)))
+_nintervals(c) = (h = _hval(_mesh(c)); size(h, ndims(h)))
+_num_meshes(c) = _num_meshes(_mesh(c))
 _degree(c) = length(_weights(c).taus)
 
 _hval(m::CollocationMesh) = getfield(m, :h)
 _tval(m::CollocationMesh) = getfield(m, :t)
 _hpar(m::CollocationMesh) = getfield(m, :hpar)
 _tpar(m::CollocationMesh) = getfield(m, :tpar)
+_horizon_scale(m::CollocationMesh) = getfield(m, :horizon_scale)
 
 _isstateform(c) = _mode(c).basis isa StateForm
-_isadaptive(c) = _hpar(_mesh(c)) !== nothing
+_isadaptive(m::CollocationMesh) = _hpar(m) !== nothing
+_is_unknown_horizon(m::CollocationMesh) = _horizon_scale(m) !== nothing
 
 # Copied rather than grown in place, so a core does not report what was added to a sibling
 # derived from the same parent. The mesh stays shared: set_nodes! moves it for every core.
@@ -224,10 +250,15 @@ _residuals(c::CollocationExaCore, var) = [r for r in _tag(c).resid if r.var === 
 # Swap the handle a helper wrapped back into the core, so `core.z` and `model.z` give the
 # CollocationVariable rather than the bare Variable add_var registered.
 function _rehandle(c::CollocationExaCore, old, new, name)
-    var = map(v -> v === old ? new : v, getfield(c, :var))
+    var = _swaphandle(getfield(c, :var), old, new)
     refs = name === nothing ? getfield(c, :refs) : (; getfield(c, :refs)..., _name_of(name) => new)
     return ExaCore(c; var = var, refs = refs)
 end
+
+# Keep the storage container ExaModels handed us: Tuple under `concrete = Val(true)`, else the
+# Vector{Any} that `_materialize` needs. A plain `map` narrows the vector eltype and breaks it.
+_swaphandle(v::Tuple, old, new) = map(x -> x === old ? new : x, v)
+_swaphandle(v::AbstractVector, old, new) = Any[x === old ? new : x for x in v]
 
 _name_of(::Val{N}) where {N} = N
 
@@ -244,12 +275,7 @@ function _block_layout(c::CollocationExaCore, z, who::Symbol)
         "include_boundary = false."
     ))
 
-    nlead = _nleading(z)
-    0 <= nlead <= 2 || throw(ArgumentError(
-        "$who: that block declares $nlead leading dimensions; the add_con_* helpers handle " *
-        "up to two."
-    ))
-    return nlead, K
+    return _nleading(z), K
 end
 
 # ---------- property forwarding ----------
@@ -277,10 +303,12 @@ function _getprop(c, name::Symbol)
 
     tag = _tag(c)
     name in _TAG_FIELDS && return getfield(tag, name)
-    name === :N && return length(_hval(tag.mesh))
+    name === :N && return _nintervals(c)
     name === :K && return length(tag.mode.weights.taus)
     name === :nodes && return tag.mesh.nodes
-    name === :adaptive && return _hpar(tag.mesh) !== nothing
+    name === :M && return _num_meshes(c)
+    name === :adaptive && return _isadaptive(tag.mesh)
+    name === :unknown_horizon && return _is_unknown_horizon(tag.mesh)
     name in _MODE_FIELDS && return getfield(tag.mode, name)
     return getfield(c, name)
 end
@@ -291,7 +319,7 @@ Base.propertynames(m::CollocationExaModel{T, VT}) where {T, VT <: AbstractVector
     _propnames(m)
 _propnames(c) = (
     fieldnames(typeof(c))...,
-    _TAG_FIELDS..., :N, :K, :nodes, :adaptive, _MODE_FIELDS...,
+    _TAG_FIELDS..., :N, :K, :M, :nodes, :adaptive, :unknown_horizon, _MODE_FIELDS...,
     keys(getfield(c, :refs))...,
 )
 
@@ -301,21 +329,35 @@ Base.show(io::IO, m::CollocationExaModel{T, VT}) where {T, VT <: AbstractVector{
     _show_collocation(io, m, "A CollocationExaModel")
 
 function _show_collocation(io::IO, c, header)
-    tag = _tag(c)
-    nodes = tag.mesh.nodes
+    tag, M = _tag(c), _num_meshes(c)
     vars = join(
-        ["$(b.name)[$(join((b.dims..., "i", "k=$(b.krange)"), ", "))]" for b in tag.block],
+        ["$(b.name)[$(join((_blockaxes(b)..., "i", "k=$(b.krange)"), ", "))]" for b in tag.block],
         ", ",
     )
+    modes = join(filter(!isempty, [
+        M == 1 ? "" : "$M meshes",
+        _isadaptive(tag.mesh) ? "adaptive" : "",
+        _is_unknown_horizon(tag.mesh) ? "unknown horizon" : "",
+    ]), ", ")
     print(
         io,
         """
         $header
 
-          mesh    N = $(length(_hval(tag.mesh))) intervals, K = $(length(tag.mode.weights.taus)) degree$(_hpar(tag.mesh) === nothing ? "" : ", adaptive")
-          horizon [$(first(nodes)), $(last(nodes))]
+          mesh    N = $(_nintervals(c)) intervals, K = $(length(tag.mode.weights.taus)) degree$(isempty(modes) ? "" : ", $modes")
+          horizon $(_horizons(tag.mesh, M))
           mode    $(tag.mode.basis), $(tag.mode.polynomial), $(tag.mode.roots)
           vars    $(isempty(vars) ? "-" : vars)
         """,
     )
 end
+
+# One span per mesh, first and last only past a few so many of them stay one line
+function _horizons(mesh::CollocationMesh, M)
+    ends(m) = (n = _mesh_nodes(mesh, m); "[$(first(n)), $(last(n))]")
+    M <= 4 && return join((ends(m) for m in 1:M), " ")
+    return "$(ends(1)) … $(ends(M))"
+end
+
+# The block's declared axes as shown, naming the mesh index a spanning block carries last
+_blockaxes(b) = b.mesh === nothing ? (b.dims[1:(end - 1)]..., "m=$(last(b.dims))") : b.dims

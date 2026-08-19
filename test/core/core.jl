@@ -13,7 +13,6 @@
         @test length(core.weights.taus) == K
         @test core.adaptive == false
 
-        # Derived properties read flat but are not stored twice
         @test core.nodes === core.mesh.nodes
         @test core.weights === core.mode.weights
         @test core.roots === core.mode.roots
@@ -26,7 +25,6 @@
         @test core isa ExaModels.ExaCore
         @test core isa ExaModelsCollocation.CollocationExaCore
 
-        # every plain ExaModels call works on it, unforwarded
         core, x = ExaModels.add_var(core, 1:3; name = Val(:x))
         core, p = ExaModels.add_par(core, 1:2; value = [1.0, 2.0])
         ExaModels.@add_var(core, w, 1:4)
@@ -34,7 +32,6 @@
         @test core.nvar == 7 && core.npar == 2 && core.ncon == 3
         @test core.x === x && core.w === w && core.g === g
 
-        # and the tag survives into the model, which is what set_nodes! needs
         m = ExaModels.ExaModel(core)
         @test m isa ExaModelsCollocation.CollocationExaModel
         @test m.N == 20 && m.K == 3
@@ -75,27 +72,40 @@
     end
 
     @testset "both entry points agree" begin
-        # CollocationExaCore is sugar over ExaCore(T; tag = Collocation(...)); Collocation
-        # holds the validation so the sugar cannot get around it.
         c1 = CollocationExaCore(nodes, K; roots = GaussLegendre())
-        c2 = ExaModels.ExaCore(concrete = Val(true);
-                               tag = Collocation(nodes, K; roots = GaussLegendre()))
+        c2 = ExaModels.ExaCore(tag = Collocation(nodes, K; roots = GaussLegendre()))
         @test typeof(c1) === typeof(c2)
         @test c1.N == c2.N && c1.K == c2.K && c1.roots === c2.roots
 
-        plain = ExaModels.ExaCore(concrete = Val(true))
+        plain = ExaModels.ExaCore()
         plain, p = ExaModels.add_var(plain, 1:4; name = Val(:p))
         attached = ExaModels.ExaCore(plain; tag = Collocation(nodes, K))
         @test attached.nvar == 4
         @test attached.p === p
         @test attached.N == 20
 
-        # a LegacyExaCore cannot carry the tag, so `concrete` is refused outright
-        @test_throws ArgumentError CollocationExaCore(nodes, K; concrete = Val(false))
+        @test CollocationExaCore(nodes, K; concrete = Val(true)) isa CollocationExaCore
+    end
+
+    @testset "it prints" begin
+        one = CollocationExaCore(nodes, K)
+        @add_var_collocation(one, z, 1:2)
+        s = sprint(show, one)
+        @test occursin("N = 20 intervals, K = 3 degree\n", s)
+        @test occursin("horizon [0.0, 5.0]", s)
+        @test occursin("z[1:2, i, k=0:3]", s)
+        @test sprint(show, ExaModels.ExaModel(one)) != s
+
+        fam = CollocationExaCore([range(0.0, tf; length = 21) for tf in (1.0, 5.0)], K; unknown_horizon = true)
+        f = sprint(show, fam)
+        @test occursin("2 meshes, unknown horizon", f)
+        @test occursin("horizon [0.0, 1.0] [0.0, 5.0]", f)
+
+        big = CollocationExaCore([range(0.0, Float64(j); length = 21) for j in 1:9], K)
+        @test occursin("…", sprint(show, big))
     end
 
     @testset "unknown property" begin
-        # falls through to getfield, so the exact type moved to FieldError in 1.12
         core = CollocationExaCore(nodes, K)
         @test_throws Exception core.nope
     end

@@ -1,7 +1,5 @@
 @testset "set_nodes!" begin
     @testset "moves the mesh without rebuilding" begin
-        # A rhs that genuinely depends on t, so a mesh update that moved h but not t would
-        # show up here: dz/dt = -2t z, z(0) = 1 => exp(-t^2).
         function build(adaptive; nodes = range(0.0, 1.0; length = 11), K = 3)
             core = CollocationExaCore(nodes, K; adaptive)
             @add_var_collocation(core, z, 1:1)
@@ -35,15 +33,36 @@
         @test ExaModels.ExaModel(core).θ[1:5] ≈ diff(graded)
     end
 
+    @testset "moves one mesh, leaving the rest" begin
+        tfs = (1.0, 4.0)
+        nodes = [collect(range(0.0, tf; length = 6)) for tf in tfs]
+        core = CollocationExaCore(nodes, 3; adaptive = true)
+        @add_var_collocation(core, z)
+
+        graded = [4 * (i / 5)^2 for i in 0:5]
+        set_nodes!(core, graded; mesh = 2)
+        ref = CollocationExaCore([nodes[1], graded], 3; adaptive = true)
+
+        @test core.nodes[1, :] ≈ nodes[1]
+        @test core.nodes[2, :] ≈ graded
+        @test ExaModelsCollocation._hval(core.mesh) ≈ ExaModelsCollocation._hval(ref.mesh)
+        @test ExaModelsCollocation._tval(core.mesh) ≈ ExaModelsCollocation._tval(ref.mesh)
+        @test core.θ[1:10] ≈ vec(ExaModelsCollocation._hval(core.mesh))
+
+        @test_throws ArgumentError set_nodes!(core, graded; mesh = 3)
+        @test_throws DimensionMismatch set_nodes!(core, graded[1:(end - 1)]; mesh = 2)
+
+        single = CollocationExaCore(range(0.0, 1.0; length = 6), 3; adaptive = true)
+        @test_throws ArgumentError set_nodes!(single, collect(range(0.0, 1.0; length = 6)); mesh = 1)
+    end
+
     @testset "rejects what it cannot do" begin
         core = CollocationExaCore(range(0.0, 1.0; length = 6), 3)
         @test_throws ArgumentError set_nodes!(core, collect(range(0.0, 2.0; length = 6)))
 
         acore = CollocationExaCore(range(0.0, 1.0; length = 6), 3; adaptive = true)
-        # changing the interval count changes the variable count, so it needs a rebuild
         @test_throws DimensionMismatch set_nodes!(acore, collect(range(0.0, 1.0; length = 7)))
         @test_throws ArgumentError set_nodes!(acore, [0.0, 0.4, 0.2, 0.6, 0.8, 1.0])
-        # and a repeated boundary, which would collapse an interval to zero width
         @test_throws ArgumentError set_nodes!(acore, [0.0, 0.2, 0.2, 0.6, 0.8, 1.0])
     end
 end

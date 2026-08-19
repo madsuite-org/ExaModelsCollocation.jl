@@ -35,4 +35,34 @@
         @test size(ExaModelsCollocation._tval(core.mesh)) == (5, 3)
         @test ExaModelsCollocation._hval(core.mesh) ≈ fill(0.2, 5)
     end
+
+    @testset "more than one mesh" begin
+        taus = ExaModelsCollocation._get_taus(GaussRadau(), 3)
+        tfs = [1.0, 2.0, 5.0]
+        inp = ExaModelsCollocation._nodes_input([range(0.0, tf; length = 11) for tf in tfs])
+        mesh = ExaModelsCollocation._get_mesh(inp, taus)
+
+        @test size(mesh.nodes) == (3, 11)
+        @test size(mesh.h) == (3, 10)
+        @test size(mesh.t) == (3, 10, 3)
+        for (m, tf) in enumerate(tfs)
+            @test all(mesh.h[m, :] .≈ tf / 10)
+            @test mesh.nodes[m, end] ≈ tf
+            @test mesh.t[m, end, end] ≈ tf
+        end
+
+        one = ExaModelsCollocation._get_mesh(
+            ExaModelsCollocation._nodes_input([range(0.0, 1.0; length = 11)]), taus,
+        )
+        @test one.nodes isa Vector{Float64}
+        @test one.h isa Vector{Float64}
+        @test one.t isa Matrix{Float64}
+
+        @test ExaModelsCollocation._nodes_input([0.0 0.5 1.0]) == [0.0, 0.5, 1.0]
+        @test ExaModelsCollocation._nodes_input([[0.0, 0.5, 1.0]]) == [0.0, 0.5, 1.0]
+        @test size(ExaModelsCollocation._nodes_input([0.0 0.5 1.0; 0.0 1.0 2.0])) == (2, 3)
+
+        @test_throws ArgumentError ExaModelsCollocation._nodes_input([[0.0, 1.0], [0.0, 0.5, 1.0]])
+        @test_throws ArgumentError ExaModelsCollocation._nodes_input(Vector{Float64}[])
+    end
 end

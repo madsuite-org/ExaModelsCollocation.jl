@@ -30,6 +30,39 @@
         @test size(interpolate(core, fill(1.0, 3, N, K), u, 0.5)) == (3,)
     end
 
+    @testset "which mesh is the call's to name" begin
+        tfs = (1.0, 4.0)
+        core = CollocationExaCore([range(0.0, tf; length = N + 1) for tf in tfs], K)
+        core, z1 = add_var_collocation(core, 1:1; mesh = 1)
+        core, z2 = add_var_collocation(core, 1:1; mesh = 2)
+        core, zf = add_var_collocation(core, 1:1)
+        zsol = reshape(collect(1.0:(N * (K + 1))), 1, N, K + 1)
+        fsol = Array{Float64}(undef, 1, 2, N, K + 1)
+        fsol[:, 1, :, :] .= zsol
+        fsol[:, 2, :, :] .= 2 .* zsol
+
+        ref(tf) = (r = CollocationExaCore(range(0.0, tf; length = N + 1), K);
+            add_var_collocation(r, 1:1))
+
+        r2, zr2 = ref(tfs[2])
+        @test interpolate(core, zsol, z2, 2.7) ≈ interpolate(r2, zsol, zr2, 2.7)
+        @test interpolate(core, zsol, z2, 0.5) ≈ interpolate(r2, zsol, zr2, 0.5)
+
+        @test interpolate(core, fsol, zf, 2.7; mesh = 2) ≈ 2 .* interpolate(r2, zsol, zr2, 2.7)
+        r1, zr1 = ref(tfs[1])
+        @test interpolate(core, fsol, zf, 0.5; mesh = 1) ≈ interpolate(r1, zsol, zr1, 0.5)
+        @test length(interpolate(core, fsol, zf, 0.5; mesh = 1)) == 1
+
+        @test interpolate(core, fsol, zf, [0.5, 0.9]; mesh = 1) ≈
+            [interpolate(core, fsol, zf, t; mesh = 1) for t in (0.5, 0.9)]
+
+        @test_throws ArgumentError interpolate(core, zsol, z1, 2.7)
+        @test_throws ArgumentError interpolate(core, fsol, zf, 2.7; mesh = 1)
+        @test_throws ArgumentError interpolate(core, fsol, zf, 0.5)
+        @test_throws ArgumentError interpolate(core, zsol, z2, 0.5; mesh = 1)
+        @test_throws ArgumentError interpolate(core, fsol, zf, 0.5; mesh = 3)
+    end
+
     @testset "rejects a time off the mesh" begin
         core = CollocationExaCore(range(0.0, 1.0; length = N + 1), K)
         core, z = add_var_collocation(core, 1:1)

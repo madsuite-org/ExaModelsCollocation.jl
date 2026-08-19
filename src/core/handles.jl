@@ -8,6 +8,7 @@ an `ExaModels.Variable`: `z[v, c, i, k]`, or `z[i, k]` when no dimensions were d
 # Fields
 - `dims`   : declared dimensions, the shape at one collocation point
 - `krange` : collocation index range, `0:K` with the interval-left boundary node, else `1:K`
+- `mesh`   : the mesh the block is pinned to, or `nothing` when it spans every one
 """
 struct CollocationVariable{S, O, T, D} <: ExaModels.AbstractVariable
     size::S
@@ -17,13 +18,18 @@ struct CollocationVariable{S, O, T, D} <: ExaModels.AbstractVariable
     tag::T
     dims::D
     krange::UnitRange{Int}
+    mesh::Union{Int, Nothing}
 end
 
-CollocationVariable(v::ExaModels.Variable, dims, krange::UnitRange{Int}) =
-    CollocationVariable(v.size, v.length, v.offset, v.name, v.tag, dims, krange)
+CollocationVariable(v::ExaModels.Variable, dims, krange::UnitRange{Int}, mesh) =
+    CollocationVariable(v.size, v.length, v.offset, v.name, v.tag, dims, krange, mesh)
 
 # Leading dimensions the caller declared; the mesh indices (i, k) are the rest.
 _nleading(z::CollocationVariable) = length(z.dims)
+
+# Where a row names its mesh: the last slot entry when the block carries the mesh axis, and
+# the literal it was pinned to otherwise. One mesh pins every block, so nothing changes there.
+_meshpos(z::CollocationVariable, slot) = z.mesh === nothing ? last(slot) : Fixed(z.mesh)
 
 """
     CollocationSlot

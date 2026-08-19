@@ -7,22 +7,17 @@
         core = CollocationExaCore(nodes, K)
 
         core, z = add_var_collocation(core, 1:nz, 1:Nc)
-        # z[v,c] declared -> z[v,c,i,k] allocated, k = 0,...,K
         @test core.nvar == nz * Nc * N * (K + 1)
         @test z.krange == 0:K
         @test z.dims == (1:nz, 1:Nc)
         @test ExaModels.size(z.size) == (nz, Nc, N, K + 1)
 
         core, u = add_var_collocation(core, 1:nu, 1:Nc; include_boundary = false)
-        # u[v,c] declared -> u[v,c,i,k] allocated, k = 1,...,K
         @test core.nvar == nz * Nc * N * (K + 1) + nu * Nc * N * K
         @test u.krange == 1:K
     end
 
     @testset "Integer dims are normalized to ranges" begin
-        # add_var takes an Integer or a UnitRange per dimension, `n` meaning 1:n. The block
-        # stores ranges either way, so add_con_continuity can enumerate its slots -- left as
-        # an Integer, the coverage check would see the single slot z[nz] and pass vacuously.
         core = CollocationExaCore(nodes, K)
         core, z = add_var_collocation(core, nz)
         @test z.dims == (1:nz,)
@@ -30,6 +25,28 @@
 
         @add_con_collocation(core, coll, z[nz], -z[nz])
         @test_throws ArgumentError add_con_continuity(core, z)
+    end
+
+    @testset "start, lvar and uvar are length-checked" begin
+        single() = CollocationExaCore(nodes, K)
+        both() = CollocationExaCore([nodes, nodes], K)
+        len = nz * N * (K + 1)
+
+        core, z = add_var_collocation(single(), 1:nz; start = fill(0.5, len))
+        @test all(==(0.5), core.x0)
+        @test_throws DimensionMismatch add_var_collocation(single(), 1:nz; start = zeros(len - 1))
+        @test_throws DimensionMismatch add_var_collocation(both(), 1:nz; start = fill(0.5, len))
+        @test_throws DimensionMismatch add_var_collocation(both(), 1:nz; lvar = zeros(len))
+        @test_throws DimensionMismatch add_var_collocation(both(), 1:nz; uvar = ones(len))
+
+        core, z = add_var_collocation(both(), 1:nz; start = fill(0.5, nz, 2, N, K + 1))
+        @test length(core.x0) == 2 * len && all(==(0.5), core.x0)
+
+        core, zp = add_var_collocation(both(), 1:nz; mesh = 2, start = fill(0.5, len))
+        @test zp.dims == (1:nz,) && length(core.x0) == len
+
+        core, zs = add_var_collocation(both(), 1:nz; start = 0.5)
+        @test length(core.x0) == 2 * len
     end
 
     @testset "the name is an optional Val keyword, as in add_var" begin
@@ -40,8 +57,6 @@
         @test y.dims == (1:nz, 1:Nc)
         @test y in core.block
 
-        # named, exactly the way ExaModels.add_var takes it -- and registered upstream, so
-        # the collocation handle is what core.z and model.z give back
         core, z = add_var_collocation(core, 1:nz, 1:Nc; name = Val(:z))
         @test core.z === z
         @test :z in propertynames(core)
