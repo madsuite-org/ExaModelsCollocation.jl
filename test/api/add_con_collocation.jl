@@ -306,6 +306,7 @@ end
         core, coll, z[v], -z[v] for (i, k, v) in itr)
 
     @test_throws ArgumentError @add_con_collocation(core, coll, z[v, 1], -z[v, 1] for v in 1:2)
+    @test_throws ArgumentError @add_con_collocation(core, coll, z, -z[v] for v in 1:2)
     @test_throws ArgumentError add_con_collocation(core, (-z[v, i, k] for (v, i, k, t) in
         [(v, i, k) for v in 1:2, i in 1:4, k in 1:3]))
 
@@ -332,7 +333,7 @@ end
 
         @add_con_collocation(core, coll, z[], -z)
         @add_con_continuity(core, cont, z)
-        ExaModels.@add_con(core, ic, z[1, 0] - 1.0 for _ in 1:1)
+        ExaModels.@add_con(core, ic, z[1, 0] - 1.0)
 
         @test core.ncon == N * K + (N - 1) + 1
         result = madnlp(ExaModels.ExaModel(core); print_level = MadNLP.ERROR, tol = 1e-12)
@@ -353,6 +354,21 @@ end
             else
                 itr = [(i, k) for i in 1:N, k in 1:K]
                 @add_con_collocation(core, coll, z[], -z[i, k] for (i, k) in itr)
+            end
+            @add_con_continuity(core, cont, z)
+            ExaModels.ExaModel(core)
+        end
+        @test same_residual(build(true), build(false))
+    end
+
+    @testset "a bare target names the block" begin
+        build(bare) = () -> begin
+            core = CollocationExaCore(range(0.0, TF; length = N + 1), K)
+            @add_var_collocation(core, z)
+            if bare
+                @add_con_collocation(core, coll, z, -z)
+            else
+                @add_con_collocation(core, coll, z[], -z)
             end
             @add_con_continuity(core, cont, z)
             ExaModels.ExaModel(core)

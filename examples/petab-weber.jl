@@ -379,7 +379,7 @@ for (c, dlab, stim) in [(DATA2, "data2", "PdBu"), (DATA3, "data3", "NB142-70")]
     push!(panels, qs)
 end
 
-png = joinpath(@__DIR__, "petab-weber.png")
+png = joinpath(@__DIR__, splitext(basename(@__FILE__))[1] * ".png")
 savefig(plot(panels...; layout = (3, 2), size = (1200, 1500),
              left_margin = 5Plots.mm, bottom_margin = 5Plots.mm), png)
 println("wrote $png")

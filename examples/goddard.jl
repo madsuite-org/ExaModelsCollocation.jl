@@ -52,10 +52,10 @@ function examodel_goddard(; tf0 = 0.2, N = 60, K = 3)
 
     # Create initial and terminal condition constraints
     @add_con(core, ic, z[v, 1, 0] - val for (v, val) in [(1, h0), (2, v0), (3, m0)])
-    @add_con(core, tc, z[3, N, K] - mf for _ in 1:1)
+    @add_con(core, tc, z[3, N, K] - mf)
 
     # Create objective function
-    @add_obj(core, -z[1, N, K] for _ in 1:1)
+    @add_obj(core, -z[1, N, K])
 
     return ExaModel(core)
 end
@@ -66,7 +66,7 @@ end
 model = examodel_goddard()
 
 # Solve
-result = madnlp(model; tol = 1e-8)
+result = madnlp(model)
 
 zsol = solution(result, model.z)
 println("status    = $(result.status)")

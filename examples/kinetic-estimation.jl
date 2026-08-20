@@ -1,4 +1,4 @@
-# Transient parameter estimation under a known control profile
+# Transient kinetic parameter estimation under a known control profile
 #
 #   min_p  sum_m 0.5 ((z_v(t_m) - y_vm)/sd)^2
 #   s.t.   cA' = -k1(u) cA
@@ -112,7 +112,7 @@ end
 model = examodel_transient_pe()
 
 # Solve
-result = madnlp(model; tol = 1e-8)
+result = madnlp(model)
 
 psol = solution(result, model.p)
 println("status    = $(result.status)")
@@ -147,6 +147,6 @@ plot!(pu, tgrid, u_profile.(tgrid);
     color = :black, linewidth = 2, linestyle = :dash, legend = false,
     xlims = (0.0, TEND), ylims = (tlo, thi), ylabel = "T [K]")
 
-png = joinpath(@__DIR__, "transient-estimation.png")
+png = joinpath(@__DIR__, splitext(basename(@__FILE__))[1] * ".png")
 savefig(plot(pz; size = (900, 480)), png)
 println("wrote $png")

@@ -296,7 +296,7 @@ end
 model = examodel_bruno()
 
 # Solve
-result = madnlp(model; tol = 1e-8)
+result = madnlp(model)
 
 θsol = solution(result, model.p)
 println("status    = $(result.status)")

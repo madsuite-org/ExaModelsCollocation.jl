@@ -9,7 +9,6 @@ using ExaModels
 using ExaModelsCollocation
 using MadNLP
 
-# p1 is pinned by default so the optimum is not the rest solution
 function examodel_van_der_pol(; tf = 5.0, N = 20, K = 3, p1 = 1.0, adaptive = false)
     # Create CollocationExaCore
     core = CollocationExaCore(range(0.0, tf; length = N + 1), K; adaptive)
@@ -18,7 +17,7 @@ function examodel_van_der_pol(; tf = 5.0, N = 20, K = 3, p1 = 1.0, adaptive = fa
     @add_var_collocation(core, z, 1:3)                       # z[v,i,k] w/ k = 0,...,K
     @add_var_collocation(core, u; include_boundary = false)  # k = 1,...,K
 
-    # Create standard ExaModels variables and parameters
+    # Create ExaModels variables and parameters
     @add_var(core, p, 1:2; lvar = [p1, -1.0], uvar = [p1, 1.0], start = [1.0, 0.0])
     @add_par(core, theta, [1.0])
 
@@ -38,10 +37,10 @@ function examodel_van_der_pol(; tf = 5.0, N = 20, K = 3, p1 = 1.0, adaptive = fa
 
     # Create initial condition constraints
     @add_con(core, ic_zero, z[v, 1, 0] for v in [1, 3])
-    @add_con(core, ic_par, z[2, 1, 0] - p[1] for _ in 1:1)
+    @add_con(core, ic_par, z[2, 1, 0] - p[1])
 
     # Create objective function
-    @add_obj(core, z[3, N, K] for _ in 1:1)
+    @add_obj(core, z[3, N, K])
 
     return ExaModel(core)
 end
@@ -52,7 +51,7 @@ end
 model = examodel_van_der_pol()
 
 # Solve
-result = madnlp(model; tol = 1e-8)
+result = madnlp(model)
 
 zsol = solution(result, model.z)
 println("status    = $(result.status)")

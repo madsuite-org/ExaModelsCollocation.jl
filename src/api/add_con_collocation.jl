@@ -332,6 +332,7 @@ end
 # The generator the function is given: the target moved inside where its indices are bound,
 # the mesh crossed in when the caller left it out, and every operand completed against i, k.
 function _collocation_generator(core, target, rhs)
+    target isa Expr && target.head === :ref || (target = Expr(:ref, target))
     rhs isa Expr && rhs.head === :flatten &&
         error("@add_con_collocation: write the iterator as `for … in …, … in …`, not nested")
     body, clauses = rhs isa Expr && rhs.head === :generator ?
