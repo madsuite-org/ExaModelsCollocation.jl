@@ -1,9 +1,48 @@
-# Bruno et al. (2016), J Exp Bot 67(21):5993-6005
-# Bruno_JExptBot2016 from Benchmarking Initiative's PEtab Collection
+# PEtab Benchmark Collection: Bruno_JExptBot2016
+#
+# M. Bruno, J. Koschmieder, F. Wuest, P. Schaub, M. Fehling-Kaschek, J. Timmer, P. Beyer, and
+# S. Al-Babili, Enzymatic study on AtCCD4 and AtCCD7 and their potential to form acyclic regulatory
+# metabolites, J. Exp. Bot., 67 (2016), pp. 5993-6005.
+# H. Hass, C. Loos, E. Raimundez-Alvarez, J. Timmer, J. Hasenauer, and C. Kreutz, Benchmark problems
+# for dynamic modeling of intracellular processes, Bioinformatics, 35 (2019), pp. 3073-3082.
+#
+#   min  sum_m 0.5 ((z_vc(t_m) - y_m)/sd_m)^2 + log sd_m + 0.5 log 2π
+#   s.t. bcar'  = -v1
+#        bcry'  = -v3 - v4
+#        b10'   =  v1 - v2 + v3
+#        bio'   =  v1 + v2 + v4
+#        ohb10' =  v4 - v5 + v6
+#        ohbio' =  v3 + v5 + v6
+#        zea'   = -v6
+#        v1 = kb1 bcar,  v2 = kb2 b10,  v3 = kc1 bcry,  v4 = kc2 bcry,  v5 = kc4 ohb10,  v6 = k5 zea
+#        rate constants per condition c: 0, k, or k szea from the condition table
+#        z_c(0) = init_* per condition c, 0 otherwise
+#        1e-5 <= p <= 1e3,  θ = log10 p
+#
+#   bcar     : beta-carotene
+#   bcry     : beta-cryptoxanthin
+#   b10      : beta-apo-10'-carotenal
+#   bio      : beta-ionone
+#   ohb10    : 3-OH-beta-apo-10'-carotenal
+#   ohbio    : 3-OH-beta-ionone
+#   zea      : zeaxanthin
+#   kb1      : bcar cleavage rate constant
+#   kb2      : b10 cleavage rate constant
+#   kc1, kc2 : bcry cleavage rate constants, one per cleavage site
+#   kc4      : ohb10 cleavage rate constant
+#   k5       : zea cleavage rate constant
+#   szea     : rate scaling in conditions 3 and 6
+#   init_*   : initial concentrations
+#   c        : experimental condition, 6 in total
+#   y_m      : measured concentration at t_m
+#   sd_m     : measurement standard deviation
+#   θ        : log10 of the 13 parameters, the decision variables
 
-using ExaModels
-using ExaModelsCollocation
-using MadNLP
+using BenchmarkTools
+
+using ExaModels, ExaModelsCollocation
+using MadNLP, MadNLPHSL
+using MadNLPGPU, CUDA, CUDSS
 
 # ----- Problem data from PEtab file -----
 
@@ -128,6 +167,7 @@ const meas = [
               180.0  2.128     0.133086]),
 ]
 const Nm = sum(size(tbl, 1) for (_, _, tbl) in meas)
+const TEND = 180.0
 
 # Known optimal solution
 const NLL_REF = -46.68818145
@@ -151,10 +191,6 @@ function bruno_rhs(z, a)
         -v6
     ]
 end
-
-# ----- Mesh nodes -----
-
-const TEND, NMESH, KDEG = 180.0, 36, 4
 
 # ----- Obtain good initial guess for discretized states -----
 
@@ -191,17 +227,18 @@ function state0(θ)
 end
 
 # ----- Create ExaModel -----
-function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH)
+
+function bruno_model(; N = 36, K = 4, backend = nothing)
     nodes = range(0.0, TEND; length = N + 1)
 
     # Create CollocationExaCore
-    core = CollocationExaCore(nodes, K)
+    core = CollocationExaCore(nodes, K; backend = backend)
 
     # Solve ODE system at nominal θ to obtain good initial guess
     h, taus = diff(core.nodes), core.weights.taus
     ik = [(i, k) for i in 1:N for k in 0:K]
     ts = [core.nodes[i] + (k == 0 ? 0.0 : h[i] * taus[k]) for (i, k) in ik]
-    cv0, z0 = rates(θ0), state0(θ0)
+    cv0, z0 = rates(θnom), state0(θnom)
     zstart = Array{Float64}(undef, Nz, Nc, N, K + 1)
     for c in 1:Nc
         prof = RK4(z -> bruno_rhs(z, view(cv0, :, c)), z0[:, c], ts)
@@ -214,7 +251,7 @@ function examodel_bruno(θ0 = θnom; K = KDEG, N = NMESH)
     @add_var_collocation(core, z, 1:Nz, 1:Nc; start = zstart) # z[v,c,i,k]
 
     # Create variables (unknown parameters to estimate)
-    ExaModels.@add_var(core, p, 1:Np; lvar = θLB, uvar = θUB, start = θ0)
+    @add_var(core, p, 1:Np; lvar = θLB, uvar = θUB, start = θnom)
 
     # Create auxiliary variables and constraints for condition-dependent variables
     @add_var(core, cv, 1:Ncv, 1:Nc; start = cv0)
@@ -292,14 +329,31 @@ end
 
 # ----- Solve -----
 
-# Create CollocationExaModel
-model = examodel_bruno()
+# Solve with CPU
+model_cpu = bruno_model()
+result_cpu = @btime madnlp(model_cpu; tol = 1e-6, print_level = MadNLP.ERROR,
+    kkt_system = MadNLP.SparseCondensedKKTSystem,
+    equality_treatment = MadNLP.RelaxEquality,
+    fixed_variable_treatment = MadNLP.RelaxBound,
+    linear_solver = Ma57Solver,
+)
 
-# Solve
-result = madnlp(model)
+# Solve with GPU
+model_gpu = bruno_model(backend = CUDA.CUDABackend())
+result_gpu = @btime madnlp(model_gpu; tol = 1e-6, print_level = MadNLP.ERROR,
+    kkt_system = MadNLP.SparseCondensedKKTSystem,
+    equality_treatment = MadNLP.RelaxEquality,
+    fixed_variable_treatment = MadNLP.RelaxBound,
+)
 
-θsol = solution(result, model.p)
-println("status    = $(result.status)")
-println("nll       = $(result.objective), reference = $NLL_REF")
-println("|nll-ref| = $(abs(result.objective - NLL_REF))")
-println("max |θ - θnom| = $(maximum(abs, θsol - θnom))")
+# ----- Display results -----
+
+function report(label, model, result)
+    θsol = Array(solution(result, model.p))
+    println("$label status         = $(result.status)")
+    println("$label nll            = $(result.objective), reference = $NLL_REF")
+    println("$label |nll - ref|    = $(abs(result.objective - NLL_REF))")
+    println("$label max |θ - θnom| = $(maximum(abs, θsol - θnom))")
+end
+report("cpu", model_cpu, result_cpu)
+report("gpu", model_gpu, result_gpu)

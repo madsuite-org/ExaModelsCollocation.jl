@@ -1,12 +1,55 @@
-# Weber et al. (2015), BMC Systems Biology 9:9
-# Weber_BMC2015 from the Benchmarking Initiative's PEtab Collection
+# PEtab Benchmark Collection: Weber_BMC2015
+#
+# P. Weber, M. Hornjik, M. A. Olayioye, A. Hausser, and N. E. Radde, A computational model of PKD
+# and CERT interactions at the trans-Golgi network of mammalian cells, BMC Syst. Biol., 9 (2015), 9.
+# H. Hass, C. Loos, E. Raimundez-Alvarez, J. Timmer, J. Hasenauer, and C. Kreutz, Benchmark problems
+# for dynamic modeling of intracellular processes, Bioinformatics, 35 (2019), pp. 3073-3082.
+#
+#   min  sum_m 0.5 ((y_m(z, p) - ymeas_m)/sd_m)^2 + log sd_m + 0.5 log 2π
+#   s.t. PKD'      = -R1 - R2 + R3 + s12 - a11 PKD
+#        PKDDAGa'  =  R1 + R2 - R3 - a12 PKDDAGa
+#        PI4K3B'   =  p21 PI4K3Ba - R9 + s21 + pu3 u3 - a21 PI4K3B
+#        PI4K3Ba'  = -p21 PI4K3Ba + R9 - a22 PI4K3Ba
+#        CERTERa'  = -mm + p32 CERT + s31 + pu4 u4 - a31 CERTERa
+#        CERT'     = -p32 CERT + R16 - a32 CERT
+#        CERTTGNa' =  mm - R16 - a33 CERTTGNa
+#        mm  = p31 CERTERa PI4K3Ba / (PI4K3Ba + m31)
+#        R1  = p11 PKD mm / (m11 + mm)
+#        R2  = p12 PKD (pu5 u5 + 1)
+#        R3  = p13 PKDDAGa (pu6 u6 + 1)
+#        R9  = p22 PI4K3B PKDDAGa / (PKDDAGa + m22)
+#        R16 = p33 CERTTGNa PKDDAGa / (PKDDAGa + m33)
+#        z_c(0) = zss,  f(zss, p, u = 0) = 0
+#        θ = log10 p within the PEtab bounds
+#
+#   PKD      : cytosolic PKD
+#   PKDDAGa  : active PKD bound to DAG at the TGN
+#   PI4K3B   : PI4KIIIbeta
+#   PI4K3Ba  : active PI4KIIIbeta
+#   CERT     : cytosolic CERT
+#   CERTERa  : CERT at the ER
+#   CERTTGNa : CERT at the TGN
+#   u3, u4   : condition indicators, (1, 0) in data2 and (0, 1) in data3
+#   u5, u6   : stimulus after t = 24, PdBu (u5 = 1) in data2 and NB142-70 (u6 = 10) in data3
+#   a_ij     : degradation rate constants
+#   m_ij     : Michaelis constants
+#   p_ij     : reaction rate constants
+#   pu_j     : input gains
+#   s_ij     : synthesis rates
+#   scale_*  : observable scalings
+#   std_*    : observable standard deviations
+#   y_m      : observables, species sums, scaled species, and ratios
+#   zss      : pre-equilibration steady state
+#   c        : experimental condition, data2 and data3
+#   θ        : log10 of the 36 parameters, the decision variables
 
 ENV["GKSwstype"] = "100"
 
-using ExaModels
-using ExaModelsCollocation
-using MadNLP
-using Plots
+using BenchmarkTools, Plots
+
+using ExaModels, ExaModelsCollocation
+using MadNLP, MadNLPHSL
+using MadNLPGPU, CUDA, CUDSS
 
 # ----- Problem data from PEtab file -----
 
@@ -14,8 +57,6 @@ const PKD, PKDDAGa, PI4K3B, PI4K3Ba, CERTERa, CERT, CERTTGNa = 1:7
 const Nz, Nc = 7, 2
 
 const DATA2, DATA3 = 1, 2
-
-const KDEG, NSUB = 4, 4
 
 const ZSS0 = [466534.7994, 123.8608, 1577540.5394, 332054.5041,
               31948388.5902, 160797.7364, 42082828.6681]
@@ -190,7 +231,7 @@ end
 # Known control profile
 u_input(c, t) = t <= 24.0 ? (0.0, 0.0) : c == DATA2 ? (1.0, 0.0) : (0.0, 10.0)
 
-function examodel_weber(θ0 = θnom; K = KDEG, nsub = NSUB, backend = nothing)
+function weber_model(; K = 4, nsub = 4, backend = nothing)
     # Create mesh nodes
     tabs = vcat(MEAS_SUM2, MEAS_SUM3, MEAS_SCALED, MEAS_RATIO2, MEAS_RATIO3)
     tmeas = sort(unique(vcat([e[end][:, 1] for e in tabs]...)))
@@ -205,7 +246,7 @@ function examodel_weber(θ0 = θnom; K = KDEG, nsub = NSUB, backend = nothing)
     N = length(nodes) - 1
 
     # Create CollocationExaCore
-    core = CollocationExaCore(nodes, K; backend)
+    core = CollocationExaCore(nodes, K; backend = backend)
 
     # Solve ODE system at nominal θ to obtain good initial guess
     h, taus = diff(core.nodes), core.weights.taus
@@ -214,7 +255,7 @@ function examodel_weber(θ0 = θnom; K = KDEG, nsub = NSUB, backend = nothing)
     zstart = Array{Float64}(undef, Nz, Nc, N, K + 1)
     for c in 1:Nc
         u3, u4 = c == DATA2 ? (1.0, 0.0) : (0.0, 1.0)
-        prof = RK4((z, t) -> weber_rhs(z, θ0, u3, u4, u_input(c, t)...), ZSS0, ts)
+        prof = RK4((z, t) -> weber_rhs(z, θnom, u3, u4, u_input(c, t)...), ZSS0, ts)
         for (n, (i, k)) in enumerate(ik)
             zstart[:,c,i,k+1] .= prof[n]
         end
@@ -224,7 +265,7 @@ function examodel_weber(θ0 = θnom; K = KDEG, nsub = NSUB, backend = nothing)
     @add_var_collocation(core, z, 1:Nz, 1:Nc; start = zstart)
 
     # Create variables (unknown parameters to estimate)
-    @add_var(core, p, 1:Np; lvar = θLB, uvar = θUB, start = θ0)
+    @add_var(core, p, 1:Np; lvar = θLB, uvar = θUB, start = θnom)
 
     # Create pre-equilibration steady state constraints
     @add_var(core, zss, 1:Nz; start = ZSS0)
@@ -255,7 +296,7 @@ function examodel_weber(θ0 = θnom; K = KDEG, nsub = NSUB, backend = nothing)
     @add_con(core, ic, z[v,c,1,0] - zss[v] for v in 1:Nz, c in 1:Nc)
 
     # Create objective function
-    node_of(tm) = imeas[tm] == 0 ? (1, 0) : (imeas[tm], KDEG)
+    node_of(tm) = imeas[tm] == 0 ? (1, 0) : (imeas[tm], K)
     lc = 0.5 * log(2π)
 
     _rows(meas) = [(meta..., node_of(tbl[r,1])..., tbl[r,2])
@@ -287,25 +328,39 @@ end
 
 # ----- Solve -----
 
-using MadNLPGPU, CUDA, CUDSS
+# Solve with CPU
+model_cpu = weber_model()
+result_cpu = @btime madnlp(model_cpu; tol = 1e-6, print_level = MadNLP.ERROR,
+    kkt_system = MadNLP.SparseCondensedKKTSystem,
+    equality_treatment = MadNLP.RelaxEquality,
+    fixed_variable_treatment = MadNLP.RelaxBound,
+    linear_solver = Ma57Solver,
+)
 
-# Create CollocationExaModel
-model = examodel_weber(backend = CUDA.CUDABackend())
+# Solve with GPU
+model_gpu = weber_model(backend = CUDA.CUDABackend())
+result_gpu = @btime madnlp(model_gpu; tol = 1e-6, print_level = MadNLP.ERROR,
+    kkt_system = MadNLP.SparseCondensedKKTSystem,
+    equality_treatment = MadNLP.RelaxEquality,
+    fixed_variable_treatment = MadNLP.RelaxBound,
+)
 
-# Solve
-@time result = madnlp(model; tol = 1e-6, max_iter = 1000)
+# ----- Display results -----
 
-θsol = solution(result, model.p)
-println("status    = $(result.status)")
-println("nllh      = $(result.objective), reference = $NLL_REF")
-println("|nll-ref| = $(abs(result.objective - NLL_REF))")
+function report(label, model, result)
+    println("$label status      = $(result.status)")
+    println("$label nll         = $(result.objective), reference = $NLL_REF")
+    println("$label |nll - ref| = $(abs(result.objective - NLL_REF))")
+end
+report("cpu", model_cpu, result_cpu)
+report("gpu", model_gpu, result_gpu)
 
 # ----- Plot: model observables vs measured data -----
 
 tgrid = collect(range(0.0, 30.0; length = 601))
-zsol = Array(solution(result, model.z))
-psol = Array(solution(result, model.p))
-zfit = interpolate(model, zsol, model.z, tgrid)
+zsol = Array(solution(result_cpu, model_cpu.z))
+psol = Array(solution(result_cpu, model_cpu.p))
+zfit = interpolate(model_cpu, zsol, model_cpu.z, tgrid)
 
 s_PKDpN0      = ph(psol, SC_PKDpN0)
 s_PKDpN24     = ph(psol, SC_PKDpN24)

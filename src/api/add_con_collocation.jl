@@ -193,7 +193,7 @@ julia> itr = [(v, exp) for v in 1:Nz, exp in 1:Nexp]
 
 julia> c, coll = add_con_collocation(c,
            z[v,exp] => -rate[v]*z[v,exp,i,k] + rate[v]*cos(t) # right-hand side function expression added for z[v,exp]
-           for (v, exp, i, k, t) in itr) # (i, k) appended to itr autmoatically, t also if adaptive = false
+           for (v, exp, i, k, t) in itr) # (i, k) appended to itr automatically, t also if adaptive = false
 ```
 """
 function add_con_collocation(

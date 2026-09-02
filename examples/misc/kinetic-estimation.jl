@@ -1,18 +1,36 @@
-# Transient kinetic parameter estimation under a known control profile
+# Transient Kinetic Parameter Estimation
 #
-#   min_p  sum_m 0.5 ((z_v(t_m) - y_vm)/sd)^2
-#   s.t.   cA' = -k1(u) cA
-#          cB' =  k1(u) cA - k2(u) cB
-#          cC' =  k2(u) cB
-#          kr(T) = exp(pr1 - pr2 (Tref/T - 1)),  pr1 = log kr(Tref),  pr2 = Ear/(R Tref)
-#          (cA, cB, cC)(0) = (cA0, 0, 0)
+#   min  sum_m sum_v 0.5 ((c_v(t_m) - y_vm)/sd)^2
+#   s.t. cA' = -k1(T) cA
+#        cB' =  k1(T) cA - k2(T) cB
+#        cC' =  k2(T) cB
+#        kr(T) = exp(pr1 - pr2 (Tref/T - 1)),  r = 1, 2
+#        T(t) = Tpulse for Ton <= t <= Toff, Tbase otherwise
+#        cA(0) = cA0,  cB(0) = 0,  cC(0) = 0
+#
+#   cA, cB, cC : concentrations of species A, B, C
+#   T          : temperature, the known control profile
+#   k1, k2     : Arrhenius rate constants of A -> B and B -> C
+#   pr1        : log kr(Tref), estimated
+#   pr2        : Ear/(R Tref), estimated
+#   Tref       : reference temperature
+#   Ear        : activation energy of reaction r
+#   R          : gas constant
+#   y_vm       : measured concentration of species v at t_m
+#   sd         : measurement standard deviation
+#   cA0        : initial concentration of A
+#   Tbase      : base temperature
+#   Tpulse     : pulse temperature
+#   Ton, Toff  : pulse window
+#   tend       : final time
 
 ENV["GKSwstype"] = "100"
 
-using ExaModels
-using ExaModelsCollocation
-using MadNLP
-using Plots
+using BenchmarkTools, Plots
+
+using ExaModels, ExaModelsCollocation
+using MadNLP, MadNLPHSL
+using MadNLPGPU, CUDA, CUDSS
 
 # ----- Problem data -----
 
@@ -22,6 +40,7 @@ const CA0, TEND, TREF, SD = 1.0, 60.0, 310.0, 0.02
 const TBASE, TPULSE, TON, TOFF = 300.0, 340.0, 10.0, 20.0
 
 const PTRUE = [log(0.02), 6300.0 / TREF, log(0.31), 2000.0 / TREF]
+const P0 = [log(0.01), 12.0, log(0.5), 4.0]
 
 # Simulated data: time, cA, cB, cC, each with Gaussian noise of standard deviation SD
 const MEAS = [
@@ -47,12 +66,13 @@ const MEAS = [
 # Control profile u(t)
 u_profile(t) = TON <= t <= TOFF ? TPULSE : TBASE
 
-function examodel_transient_pe(p0 = [log(0.01), 12.0, log(0.5), 4.0]; K = 4)
+function kinetic_estimation_model(; K = 4, backend = nothing)
+    # Define mesh nodes at the measurement times and control switches
     nodes = sort(union([0.0, TEND], MEAS[:, 1], [TON, TOFF]))
     N = length(nodes) - 1
 
     # Create CollocationExaCore
-    core = CollocationExaCore(nodes, K)
+    core = CollocationExaCore(nodes, K; backend = backend)
 
     # Create CollocationVariable
     @add_var_collocation(core, z, 1:3; start = CA0 / 3) # z1, z2, z3 = (cA, cB, cC)
@@ -61,7 +81,7 @@ function examodel_transient_pe(p0 = [log(0.01), 12.0, log(0.5), 4.0]; K = 4)
     @add_var(core, p, 1:4;
         lvar = [log(1e-4), 0.0, log(1e-4), 0.0],
         uvar = [log(10.0), 60.0, log(10.0), 60.0],
-        start = p0
+        start = P0
     )
 
     # Create iterator
@@ -108,24 +128,41 @@ end
 
 # ----- Solve -----
 
-# Create CollocationExaModel
-model = examodel_transient_pe()
+# Solve with CPU
+model_cpu = kinetic_estimation_model()
+result_cpu = @btime madnlp(model_cpu; tol = 1e-6, print_level = MadNLP.ERROR,
+    kkt_system = MadNLP.SparseCondensedKKTSystem,
+    equality_treatment = MadNLP.RelaxEquality,
+    fixed_variable_treatment = MadNLP.RelaxBound,
+    linear_solver = Ma57Solver,
+)
 
-# Solve
-result = madnlp(model)
+# Solve with GPU
+model_gpu = kinetic_estimation_model(backend = CUDA.CUDABackend())
+result_gpu = @btime madnlp(model_gpu; tol = 1e-6, print_level = MadNLP.ERROR,
+    kkt_system = MadNLP.SparseCondensedKKTSystem,
+    equality_treatment = MadNLP.RelaxEquality,
+    fixed_variable_treatment = MadNLP.RelaxBound,
+)
 
-psol = solution(result, model.p)
-println("status    = $(result.status)")
-println("objective = $(result.objective)")
-println("k1(Tref)  = $(exp(psol[1])), simulated at $(exp(PTRUE[1]))")
-println("Ea1/R     = $(psol[2] * TREF), simulated at $(PTRUE[2] * TREF)")
-println("k2(Tref)  = $(exp(psol[3])), simulated at $(exp(PTRUE[3]))")
-println("Ea2/R     = $(psol[4] * TREF), simulated at $(PTRUE[4] * TREF)")
+# ----- Display results -----
+
+function report(label, model, result)
+    psol = Array(solution(result, model.p))
+    println("$label status   = $(result.status)")
+    println("$label obj      = $(result.objective)")
+    println("$label k1(Tref) = $(exp(psol[1])), simulated at $(exp(PTRUE[1]))")
+    println("$label Ea1/R    = $(psol[2] * TREF), simulated at $(PTRUE[2] * TREF)")
+    println("$label k2(Tref) = $(exp(psol[3])), simulated at $(exp(PTRUE[3]))")
+    println("$label Ea2/R    = $(psol[4] * TREF), simulated at $(PTRUE[4] * TREF)")
+end
+report("cpu", model_cpu, result_cpu)
+report("gpu", model_gpu, result_gpu)
 
 # ----- Plot -----
 
 tgrid = collect(range(0.0, TEND; length = 601))
-zfit = permutedims(reduce(hcat, interpolate(model, result, model.z, tgrid)))
+zfit = permutedims(reduce(hcat, interpolate(model_cpu, result_cpu, model_cpu.z, tgrid)))
 
 clo, chi = -0.07, 1.05
 f0 = (0.0 - clo) / (chi - clo)
