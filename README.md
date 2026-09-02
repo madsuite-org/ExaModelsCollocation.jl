@@ -34,7 +34,7 @@ metadata used by collocation helper functions.
 - `basis`           : differential-state representation, `StateForm()` or `DerivativeForm()`
 - `polynomial`      : interpolating polynomial, `Lagrange()`
 - `adaptive`        : interval widths are mutable `ExaModels` parameters
-- `unknown_horizon` : time horizon is a decision variable (Experimental)
+- `unknown_horizon` : time horizon is a decision variable
 - remaining kwargs passed on to `ExaCore`: `backend`, `minimize`, `name`
 
 ### Fields
