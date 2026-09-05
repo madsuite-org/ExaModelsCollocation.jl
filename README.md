@@ -74,7 +74,7 @@ add_var_collocation(core, dims...; include_boundary = true, mesh = nothing, name
 ```
 
 Adds a `CollocationVariable` with dimensions `dims` and appended mesh indicies from `CollocationExaCore` to `core`.
-Mesh indicies consist of the mesh index `m in 1:M` if `M > 1`, the interval index `i in 1:N`, and interpolation index `k in krange`.
+Mesh indicies consist of the mesh index `m in 1:M` if `nodes` is a vector of meshes, the interval index `i in 1:N`, and interpolation index `k in krange`.
 Returns `(core, CollocationVariable)`.
 
 ### Keyword Arguments

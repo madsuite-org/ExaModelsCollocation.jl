@@ -54,12 +54,12 @@
         one = ExaModelsCollocation._get_mesh(
             ExaModelsCollocation._nodes_input([range(0.0, 1.0; length = 11)]), taus,
         )
-        @test one.nodes isa Vector{Float64}
-        @test one.h isa Vector{Float64}
-        @test one.t isa Matrix{Float64}
+        @test one.nodes isa Matrix{Float64}
+        @test one.h isa Matrix{Float64}
+        @test one.t isa Array{Float64, 3}
 
-        @test ExaModelsCollocation._nodes_input([0.0 0.5 1.0]) == [0.0, 0.5, 1.0]
-        @test ExaModelsCollocation._nodes_input([[0.0, 0.5, 1.0]]) == [0.0, 0.5, 1.0]
+        @test ExaModelsCollocation._nodes_input([0.0 0.5 1.0]) == [0.0 0.5 1.0]
+        @test ExaModelsCollocation._nodes_input([[0.0, 0.5, 1.0]]) == [0.0 0.5 1.0]
         @test size(ExaModelsCollocation._nodes_input([0.0 0.5 1.0; 0.0 1.0 2.0])) == (2, 3)
 
         @test_throws ArgumentError ExaModelsCollocation._nodes_input([[0.0, 1.0], [0.0, 0.5, 1.0]])

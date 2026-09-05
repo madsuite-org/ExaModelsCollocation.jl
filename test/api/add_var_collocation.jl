@@ -17,6 +17,14 @@
         @test u.krange == 1:K
     end
 
+    @testset "a vector of one mesh carries the mesh index" begin
+        core = CollocationExaCore([nodes], K)
+        @test core.M == 1
+        core, z = add_var_collocation(core, 1:nz)
+        @test z.dims == (1:nz, 1:1) && z.mesh === nothing
+        @test ExaModels.size(z.size) == (nz, 1, N, K + 1)
+    end
+
     @testset "Integer dims are normalized to ranges" begin
         core = CollocationExaCore(nodes, K)
         core, z = add_var_collocation(core, nz)

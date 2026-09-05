@@ -37,11 +37,9 @@ _num_meshes(m::CollocationMesh) =
 
 # Parse user node inputs as as usable form
 _nodes_input(nodes::AbstractVector{<:Real}) = collect(float.(nodes))
-_nodes_input(nodes::AbstractMatrix) = size(nodes, 1) == 1 ?
-    collect(float.(vec(nodes))) : collect(float.(nodes))
+_nodes_input(nodes::AbstractMatrix) = collect(float.(nodes))
 function _nodes_input(nodes::AbstractVector)
     isempty(nodes) && throw(ArgumentError("nodes requires at least one mesh, got none"))
-    length(nodes) == 1 && return _nodes_input(only(nodes))
     n = length(first(nodes))
     all(m -> length(m) == n, nodes) || throw(ArgumentError(
         "nodes: every mesh needs the same $n boundaries. For meshes of different " *

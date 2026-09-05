@@ -3,8 +3,8 @@
     add_var_collocation(core, dims...; include_boundary = true, mesh = nothing, name = nothing, kwargs...)
 
 Adds a `CollocationVariable` with dimensions `dims` and appended mesh indices from
-[`CollocationExaCore`](@ref) to `core`. Mesh indices consist of the mesh index `m in 1:M` where
-`M > 1`, the interval index `i in 1:N`, and interpolation index `k in krange`.
+[`CollocationExaCore`](@ref) to `core`. Mesh indices consist of the mesh index `m in 1:M` if
+`nodes` is a vector of meshes, the interval index `i in 1:N`, and interpolation index `k in krange`.
 Returns `(core, CollocationVariable)`.
 
 # Keyword Arguments
@@ -34,7 +34,7 @@ function add_var_collocation(
     )
     K, M = _degree(core), _num_meshes(core)
     krange = include_boundary ? (0:K) : (1:K)
-    pin = _meshpin(mesh, M)
+    pin = _meshpin(mesh, M, _hval(_mesh(core)))
 
     # A block over every mesh carries the mesh index as its last declared dimension
     dims = map(_dimrange, dims)
@@ -71,9 +71,9 @@ _fillcount(v) = Base.IteratorSize(v) isa Union{Base.HasLength, Base.HasShape} ?
     length(v) : nothing
 
 # Which mesh a block lives on: every one by default, a single one when named, and
-# mesh 1 outright where there is only the one, so a single mesh grows no index
-function _meshpin(mesh, M)
-    mesh === nothing && return M == 1 ? 1 : nothing
+# mesh 1 outright where `nodes` was one vector, so that mesh grows no index
+function _meshpin(mesh, M, h)
+    mesh === nothing && return h isa AbstractMatrix ? nothing : 1
     mesh isa Integer && 1 <= mesh <= M || throw(ArgumentError(
         "add_var_collocation: `mesh` must name one of the $M meshes, got $mesh"
     ))
