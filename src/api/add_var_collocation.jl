@@ -1,4 +1,3 @@
-# ExaModels.add_var with the mesh axes m=1,...,M where M>1, i=1,...,N, k=0/1,...,K appended.
 """
     add_var_collocation(core, dims...; include_boundary = true, mesh = nothing, name = nothing, kwargs...)
 
