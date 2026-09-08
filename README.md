@@ -2,6 +2,8 @@
 
 Helper functions for orthogonal collocation in [ExaModels.jl](https://github.com/madsuite-org/ExaModels.jl).
 
+Use [InfiniteExaModels.jl](https://github.com/infiniteopt/InfiniteExaModels.jl) instead to build models through [InfiniteOpt.jl](https://github.com/infiniteopt/InfiniteOpt.jl)'s modeling interface.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/madsuite-org/ExaModelsCollocation.jl/blob/main/LICENSE) [![CI](https://github.com/madsuite-org/ExaModelsCollocation.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/madsuite-org/ExaModelsCollocation.jl/actions/workflows/CI.yml)
 
 ### Feature Summary

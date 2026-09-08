@@ -1,6 +1,6 @@
 name = "ExaModelsCollocation"
 uuid = "806a8761-d632-41d1-aec4-b1285f27c7c5"
-version = "0.1.0-DEV"
+version = "0.1.0"
 authors = ["Joseph Choi <jsphchoi@mit.edu>"]
 
 [deps]
