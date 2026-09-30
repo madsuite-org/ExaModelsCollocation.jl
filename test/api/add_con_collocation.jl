@@ -321,6 +321,27 @@ end
             [(v, i, k) for v in 1:2, i in 1:4, k in 1:3]))
     @test_throws ArgumentError add_con_collocation(
         core, (z[1] => -z[1, 1, 1] for r in [(v,) for v in 1:2]))
+
+    let k = 2.0
+        @test_throws ArgumentError @add_con_collocation(core, coll, z[v], -k * z[v] for v in 1:2)
+    end
+
+    @testset "coverage, $(nameof(typeof(b)))" for b in BASES
+        cc = CollocationExaCore(range(0.0, 1.0; length = 5), 3; basis = b)
+        @add_var_collocation(cc, w, 1:2)
+        full = vec([(v, i, k) for v in 1:2, i in 1:4, k in 1:3])
+        coll(rows) = add_con_collocation(cc, (w[v] => -w[v, i, k] for (v, i, k, t) in rows))
+
+        @test_throws ArgumentError coll([full; (1, 2, 1)])
+        @test_throws ArgumentError coll(filter(!=((1, 2, 1)), full))
+        @test_throws ArgumentError coll(filter(r -> r[2] != 2, full))
+        @test_throws ArgumentError coll([(v, i, 4) for v in 1:2, i in 1:4])
+
+        cw = CollocationExaCore(range(0.0, 1.0; length = 5), 3; basis = b)
+        @add_var_collocation(cw, y, 1:2, 1:2)
+        @test_throws ArgumentError add_con_collocation(
+            cw, (y[v, c] => cos(t) for (v, c, t) in [(v, c) for v in 1:2, c in 1:2]))
+    end
 end
 
 @testset "no leading dimensions" begin

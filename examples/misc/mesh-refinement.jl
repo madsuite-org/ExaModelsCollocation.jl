@@ -164,8 +164,8 @@ function solve_adaptively(
         (maximum(err) < tol || moved < movetol) && break
 
         # if criteria not satisfied, set new nodes and initial guess and re-solve
-        set_nodes!(model, new_nodes) # <-- ExaModelsCollocation.jl feature with adaptive = true
         start = reinterpolate(model, zsol, new_nodes)
+        set_nodes!(model, new_nodes) # <-- ExaModelsCollocation.jl feature with adaptive = true
         set_start!(model, model.z, start)
         zsol = solution(madnlp(model), model.z)
     end

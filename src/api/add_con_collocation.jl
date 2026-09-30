@@ -57,13 +57,28 @@ _slotof(d, L::RowLayout) = map(p -> _at(p, d), L.slot)
 _meshof(d, L::RowLayout) = _at(L.m, d)
 
 # Position of the base row a given row of the iterator feeds at collocation point k
-function _basepos(pos, d, L::RowLayout, k)
-    key = (_slotof(d, L)..., d[L.i], k)
-    haskey(pos, key) || throw(ArgumentError(
-        "add_con_collocation: the iterator has no row at $key; it must cover every " *
-        "collocation point of each interval."
-    ))
-    return pos[key]
+_basepos(pos, d, L::RowLayout, k) = pos[(_slotof(d, L)..., d[L.i], k)]
+
+function _check_coverage(itr, L::RowLayout, N, K, who::Symbol)
+    seen = Set{Any}()
+    for d in itr
+        key = (_slotof(d, L)..., d[L.i], d[L.k])
+        d[L.i] in 1:N && d[L.k] in 1:K || throw(ArgumentError(
+            "$who: the iterator row at $key is outside i in 1:$N, k in 1:$K."
+        ))
+        key in seen && throw(ArgumentError(
+            "$who: the iterator has two rows at $key, but each collocation point takes one."
+        ))
+        push!(seen, key)
+    end
+
+    for s in unique(_slotof(d, L) for d in itr), i in 1:N, k in 1:K
+        (s..., i, k) in seen || throw(ArgumentError(
+            "$who: the iterator has no row at $((s..., i, k)). It must cover every " *
+            "collocation point of each interval."
+        ))
+    end
+    return nothing
 end
 
 # ---------- the probe ----------
@@ -193,7 +208,7 @@ julia> itr = [(v, exp) for v in 1:Nz, exp in 1:Nexp]
 
 julia> c, coll = add_con_collocation(c,
            z[v,exp] => -rate[v]*z[v,exp,i,k] + rate[v]*cos(t) # right-hand side function expression added for z[v,exp]
-           for (v, exp, i, k, t) in itr) # (i, k) appended to itr automatically, t also if adaptive = false
+           for (v, exp, i, k, t) in itr) # (i, k, t) appended to itr automatically
 ```
 """
 function add_con_collocation(
@@ -214,6 +229,7 @@ function add_con_collocation(
         _flat(gen.iter), arity, _nintervals(core), K, :add_con_collocation,
     )
     L = _row_layout(itr, slot, _meshpos(z, slot), :add_con_collocation)
+    _check_coverage(itr, L, _nintervals(core), K, :add_con_collocation)
 
     rows = _trows(mesh, itr, L)
     f = _rhsof(mesh, gen, L)
@@ -247,7 +263,7 @@ function add_con_collocation(
         pos = Dict(r => n for (n, r) in enumerate(base))
         st = vec([
             (rows[n]..., _basepos(pos, d, L, k), _hcoef(mesh, _meshof(d, L), d[L.i], w.A[d[L.k], k]))
-            for (n, d) in enumerate(itr), k in 1:K
+            for (n, d) in enumerate(itr), k in 1:K if !iszero(w.A[d[L.k], k])
         ])
         aug = s -> s[nrow + 1] => _hterm(mesh, L, s, nrow + 2, f(s))
         core, _ = ExaModels.add_con!(core, con, Base.Generator(aug, st))
@@ -313,10 +329,11 @@ macro add_con_collocation(exs...)
     name === nothing || name isa Symbol ||
         error("@add_con_collocation: the second argument must be the constraint name")
 
-    gen = _collocation_generator(core, target, rhs)
+    gen, reserved = _collocation_generator(core, target, rhs)
     con = gensym(:con)
 
     return quote
+        $(map(_reserved_check, reserved)...)
         local $con
         $(esc(core)), $con = add_con_collocation(
             $(esc(core)),
@@ -359,9 +376,22 @@ function _collocation_generator(core, target, rhs)
 
     pattern = Expr(:tuple, row.args..., :t)
     skip = Set{Symbol}([names..., :i, :k, :t])
-    return Expr(
+    gen = Expr(
         :generator,
         Expr(:call, :(=>), target, _complete(body, skip)),
         Expr(:(=), pattern, rows),
     )
+    return gen, [s for s in (:i, :k, :t) if !(s in names) && _mentions(body, s)]
 end
+
+_mentions(ex, s) = ex === s || (ex isa Expr && any(a -> _mentions(a, s), ex.args))
+
+# i, k, t are reserved 
+const _RESERVED = (i = "interval index", k = "collocation index", t = "collocation time")
+
+_reserved_check(s) = :(
+    $(esc(Expr(:isdefined, s))) && throw(ArgumentError(
+        $("@add_con_collocation: `$s` is reserved in the generator body for the " *
+          "$(_RESERVED[s]), so the caller's `$s` would be shadowed. Rename the caller's `$s`.")
+    ))
+)

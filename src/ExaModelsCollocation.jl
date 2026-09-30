@@ -9,22 +9,18 @@ import ExaModels
 import ExaModels: ExaCore
 import FastGaussQuadrature
 
-for file in [
-        "collocation/taus",
-        "collocation/polynomial",
-        "collocation/basis",
-        "collocation/mesh",
-        "core/handles",
-        "core/core",
-        "api/macros",
-        "api/add_var_collocation",
-        "api/add_con_collocation",
-        "api/add_con_continuity",
-        "api/set_nodes",
-        "api/interpolate",
-    ]
-    include("$file.jl")
-end
+include("collocation/taus.jl")
+include("collocation/polynomial.jl")
+include("collocation/basis.jl")
+include("collocation/mesh.jl")
+include("core/handles.jl")
+include("core/core.jl")
+include("api/macros.jl")
+include("api/add_var_collocation.jl")
+include("api/add_con_collocation.jl")
+include("api/add_con_continuity.jl")
+include("api/set_nodes.jl")
+include("api/interpolate.jl")
 
 export CollocationExaCore, CollocationExaModel, CollocationVariable, Collocation
 export add_var_collocation, @add_var_collocation

@@ -25,7 +25,8 @@ julia> z2 = interpolate(model, result, z, 0.5; mesh = 2) # z(t = 0.5) on mesh 2
 function interpolate(c, zsol::AbstractArray, z::CollocationVariable, t::Real; mesh = nothing)
     m = _interp_mesh(c, z, mesh)
     xn, cols = _interp_basis(c, z)
-    i, tau = _interp_locate(c, m, t)
+    nodes = _mesh_nodes(_mesh(c), m)
+    i, tau = _interp_locate(nodes, diff(nodes), t)
     return _interp_slots(zsol, z, m, xn, _baryweights(xn), cols, i, tau)
 end
 
@@ -35,13 +36,15 @@ function interpolate(
     m = _interp_mesh(c, z, mesh)
     xn, cols = _interp_basis(c, z)
     w = _baryweights(xn)
+    nodes = _mesh_nodes(_mesh(c), m)
+    h = diff(nodes)
     return [
-        _interp_slots(zsol, z, m, xn, w, cols, _interp_locate(c, m, t)...) for t in ts
+        _interp_slots(zsol, z, m, xn, w, cols, _interp_locate(nodes, h, t)...) for t in ts
     ]
 end
 
 interpolate(c, result, z::CollocationVariable, t; mesh = nothing) =
-    interpolate(c, ExaModels.solution(result, z), z, t; mesh = mesh)
+    interpolate(c, Array(ExaModels.solution(result, z)), z, t; mesh = mesh)
 
 # The taus a block's coefficients sit at, and the solution() columns holding them. solution()
 # is 1-based, so k = 0,…,K lands on 1,…,K+1.
@@ -56,12 +59,10 @@ function _interp_basis(c, z::CollocationVariable)
 end
 
 # Which interval a time falls in on mesh m, and where in it
-function _interp_locate(c, m::Integer, t::Real)
-    nodes = _mesh_nodes(_mesh(c), m)
+function _interp_locate(nodes, h, t::Real)
     first(nodes) <= t <= last(nodes) || throw(ArgumentError(
         "interpolate: t = $t is outside the mesh [$(first(nodes)), $(last(nodes))]"
     ))
-    h = diff(nodes)
     i = clamp(searchsortedlast(nodes, t), 1, length(h))
     return i, (t - nodes[i]) / h[i]
 end
@@ -91,7 +92,7 @@ function _interp_slots(zsol, z::CollocationVariable, m, xn, w, cols, i, tau)
     dims, at = z.mesh === nothing ? (z.dims[1:(end - 1)], (m,)) : (z.dims, ())
     vals = [
         _evalpoly(view(zsol, s..., at..., i, cols), xn, w, tau)
-        for s in Iterators.product(dims...)
+        for s in Iterators.product(map(d -> 1:length(d), dims)...)
     ]
     return isempty(dims) ? only(vals) : vals
 end

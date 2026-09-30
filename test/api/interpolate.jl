@@ -28,6 +28,9 @@
         @test interpolate(core, fill(2.0, N, K + 1), y, 0.5) ≈ 2.0
         @test size(interpolate(core, fill(1.0, 3, 2, N, K + 1), w, 0.5)) == (3, 2)
         @test size(interpolate(core, fill(1.0, 3, N, K), u, 0.5)) == (3,)
+
+        core, o = add_var_collocation(core, 2:4)
+        @test interpolate(core, repeat([1.0, 2.0, 3.0], 1, N, K + 1), o, 0.5) ≈ [1.0, 2.0, 3.0]
     end
 
     @testset "which mesh is the call's to name" begin

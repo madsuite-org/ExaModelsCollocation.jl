@@ -83,16 +83,18 @@ end
 # right-hand sides, not at all and it would be silently left untied.
 function _covered_slots(res, z, who::Symbol)
     slots = Any[]
+    seen = Set{Any}()
     for r in res, s in r.fwhich
-        s in slots && throw(ArgumentError(
+        s in seen && throw(ArgumentError(
             "$who: two collocation calls cover $(_slotstr(s)), so its junction row would " *
             "integrate both right-hand sides"
         ))
         push!(slots, s)
+        push!(seen, s)
     end
 
     # A block declared with no dimensions is one slot, the empty tuple, so this covers it too.
-    missing = [s for s in Iterators.product(z.dims...) if !(s in slots)]
+    missing = [s for s in Iterators.product(z.dims...) if !(s in seen)]
     isempty(missing) || throw(ArgumentError(
         "$who: no add_con_collocation call covers " *
         join((_slotstr(s) for s in Iterators.take(missing, 3)), ", ") *

@@ -87,6 +87,11 @@ function _fill_t!(t::AbstractArray{<:Any,3}, nodes::AbstractMatrix, h, taus)
     return t
 end
 
+_convert_mesh_type(::Type{T}, mesh::CollocationMesh) where {T} = CollocationMesh(
+    T.(mesh.nodes), T.(getfield(mesh, :h)), T.(getfield(mesh, :t)),
+    getfield(mesh, :hpar), getfield(mesh, :tpar), getfield(mesh, :horizon_scale),
+)
+
 # If adaptive = true, append parameter handles for h[i], t[i,j]
 _with_parameters(mesh::CollocationMesh, hpar, tpar) = CollocationMesh(
     mesh.nodes, getfield(mesh, :h), getfield(mesh, :t),

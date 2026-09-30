@@ -20,6 +20,17 @@
             (:mode, :mesh, :block, :resid)
     end
 
+    @testset "mesh and weights in T" begin
+        core = CollocationExaCore(Float32, nodes, K)
+        @test eltype(core.weights.A) == Float32
+        @test eltype(core.mesh.t) == Float32
+        @test eltype(core.nodes) == Float32
+
+        @add_var_collocation(core, z, 1:1)
+        core, con = add_con_collocation(core, (z[v] => -z[v, i, k] for (v, i, k, t) in [(1,)]))
+        @test !(Float64 in fieldtypes(eltype(con.itr)))
+    end
+
     @testset "it is an ExaCore" begin
         core = CollocationExaCore(nodes, K)
         @test core isa ExaModels.ExaCore

@@ -25,7 +25,7 @@ end
 Contains details on what method of collocation is used.
 
 # Fields
-- `roots`      : collocation family, `GaussRadau()`, `GaussLendgre()`, or `GaussLobatto()`
+- `roots`      : collocation family, `GaussRadau()`, `GaussLegendre()`, or `GaussLobatto()`
 - `basis`      : differential-state representation, `StateForm()` or `DerivativeForm`
 - `polynomial` : interpolating polynomial, `Lagrange()`
 - `weights`    : `A`, `b`, `taus`
@@ -179,7 +179,7 @@ function CollocationExaCore(
         "CollocationExaCore: `adaptive` and `unknown_horizon` both take over h and t; pick one."
     ))
 
-    tag = Collocation(nodes, K; roots, basis, polynomial)
+    tag = _convert_tag_type(T, Collocation(nodes, K; roots, basis, polynomial))
     core = ExaCore(T; tag = tag, kwargs...)
     adaptive && return _make_adaptive(core)
     unknown_horizon && return _make_unknown_horizon(core)
@@ -243,6 +243,13 @@ _addresidual(c::CollocationExaCore, res::Residual) =
 
 _retag(c, block, resid) =
     ExaCore(c; tag = CollocationTag(_tag(c).mode, _tag(c).mesh, block, resid))
+
+function _convert_tag_type(::Type{T}, tag::CollocationTag) where {T}
+    mode = tag.mode
+    weights = _convert_weights_type(T, mode.weights)
+    mode = CollocationMode(mode.roots, mode.basis, mode.polynomial, weights)
+    return CollocationTag(mode, _convert_mesh_type(T, tag.mesh), tag.block, tag.resid)
+end
 
 # The residuals recorded for a variable, in the order they were added
 _residuals(c::CollocationExaCore, var) = [r for r in _tag(c).resid if r.var === var]

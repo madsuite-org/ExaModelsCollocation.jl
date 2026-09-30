@@ -61,5 +61,7 @@ _get_weights_b(::Lagrange, ::StateForm, taus) = ell1j(_add_tau0(taus))
 _get_weights_A(::Lagrange, ::DerivativeForm, taus) = Omegajk(taus, taus)
 _get_weights_b(::Lagrange, ::DerivativeForm, taus) = Omega1j(taus)
 
+_convert_weights_type(::Type{T}, w::BasisWeights) where {T} = BasisWeights(T.(w.A), T.(w.b), T.(w.taus))
+
 # Prepend the tau0 = 0 interpolation anchor to the collocation points
 _add_tau0(taus) = vcat(zero(eltype(taus)), taus)
